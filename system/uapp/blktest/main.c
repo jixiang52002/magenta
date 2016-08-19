@@ -14,7 +14,7 @@
 
 #include <ddk/protocol/block.h>
 
-static int do_test(const char* dev, mx_off_t offset, mx_off_t count, uint8_t pattern) {
+static int do_rw_test(const char* dev, mx_off_t offset, mx_off_t count, uint8_t pattern) {
     int fd = open(dev, O_RDWR);
     if (fd < 0) {
         printf("Cannot open %s!\n", dev);
@@ -89,32 +89,40 @@ fail:
     return rc;
 }
 
-static uint64_t arg_to_u64(const char* arg) {
-    int base = 10;
-    if ((arg[0] == '0') && ((arg[1] == 'x') || arg[1] == 'X')) {
-        base = 16;
-        arg = &arg[2]; // skip "0x"
+int do_multi_test(const char* dev) {
+    int fd = open(dev, O_RDWR);
+    if (fd < 0) {
+        printf("Cannot open %s!\n", dev);
+        return fd;
     }
-    return strtoull(arg, NULL, base);
+    return 0;
 }
 
 int main(int argc, const char** argv) {
-    if (argc == 1) {
+    if (argc < 2) {
         printf("not enough arguments!\n");
         goto usage;
     }
-    const char* dev = argv[1];
-    mx_off_t offset = argc >= 3 ? arg_to_u64(argv[2]) : 0;
-    mx_off_t count = argc >= 4 ? arg_to_u64(argv[3]) : UINT64_MAX;
+    const char* cmd = argv[1];
+    const char* dev = argv[2];
+    mx_off_t offset = argc >= 3 ? strtoull(argv[3], NULL, 0) : 0;
+    mx_off_t count = argc >= 4 ? strtoull(argv[4], NULL, 0) : UINT64_MAX;
 
-    do_test(dev, offset, count, 0x55);
-    do_test(dev, offset, count, 0xaa);
-    do_test(dev, offset, count, 0xff);
-    do_test(dev, offset, count, 0x00);
+    if (!strcmp(cmd, "rw")) {
+        do_rw_test(dev, offset, count, 0x55);
+        do_rw_test(dev, offset, count, 0xaa);
+        do_rw_test(dev, offset, count, 0xff);
+        do_rw_test(dev, offset, count, 0x00);
+    } else if (!strcmp(cmd, "multi")) {
+        do_multi_test(dev);
+    } else {
+        goto usage;
+    }
 
     return 0;
 usage:
     printf("Usage:\n");
-    printf("%s <dev> [<offset>] [<count>]\n", argv[0]);
+    printf("%s rw <dev> [<offset>] [<count>]\n", argv[0]);
+    printf("%s multi <dev>\n", argv[0]);
     return 0;
 }
