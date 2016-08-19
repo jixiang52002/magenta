@@ -43,6 +43,7 @@ arm_reset:
 #if WITH_KERNEL_VM
     /* enable caches so atomics and spinlocks work */
     mrs     tmp, sctlr_el1
+    orr     tmp, tmp, #(1<<26) /* Enable cache ops at EL0 */
     orr     tmp, tmp, #(1<<12) /* Enable icache */
     orr     tmp, tmp, #(1<<2)  /* Enable dcache/ucache */
     bic     tmp, tmp, #(1<<3)  /* Disable Stack Alignment Check */ /* TODO: don't use unaligned stacks */
