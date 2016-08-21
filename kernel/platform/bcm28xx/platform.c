@@ -137,6 +137,7 @@ void platform_init(void)
     uart_init();
 
     dprintf(SPEW,"post uart init\n");
+    dprintf(SPEW, "CTR_EL0 contents=%llx\n",ARM64_READ_SYSREG(ctr_el0));
 
 
 #if 0

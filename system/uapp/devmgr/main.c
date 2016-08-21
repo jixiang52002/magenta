@@ -76,8 +76,8 @@ int console_starter(void* arg) {
     devmgr_launch("mxsh:console", "/boot/bin/mxsh", NULL, "/dev/console");
 #endif
 
-    devmgr_launch("netsvc", "/boot/bin/netsvc", NULL, "/dev/console");
-
+    //devmgr_launch("netsvc", "/boot/bin/netsvc", NULL, "/dev/console");
+#if 0
     devmgr_launch("mxsh:autorun", "/boot/bin/mxsh", "/boot/autorun", NULL);
 
     printf("devmgr: vc startup\n");
@@ -94,6 +94,10 @@ int console_starter(void* arg) {
         snprintf(pname, sizeof(pname), "mxsh:vc%u", i);
         devmgr_launch(pname, "/boot/bin/mxsh", NULL, VC_DEVICE);
     }
+
+
+
+#endif
     return 0;
 }
 #endif

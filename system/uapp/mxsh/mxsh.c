@@ -338,18 +338,26 @@ mx_status_t lp_setup(launchpad_t** lp_out,
                      const char* const* envp) {
     launchpad_t* lp;
     mx_status_t status;
+    fprintf(stdout,"launchpad_create\n");
     if ((status = launchpad_create(argv[0], &lp)) < 0) {
         return status;
     }
+
+    fprintf(stdout,"Doing lp_arguments\n");
     if ((status = launchpad_arguments(lp, argc, argv)) < 0) {
         goto fail;
     }
+
+    fprintf(stdout,"Doing lp_environ\n");
     if ((status = launchpad_environ(lp, envp)) < 0) {
         goto fail;
     }
+
+    fprintf(stdout,"Doing lp_vdso_vmo\n");
     if ((status = launchpad_add_vdso_vmo(lp)) < 0) {
         goto fail;
     }
+    fprintf(stdout,"Doing lp_clone root\n");
     if ((status = launchpad_clone_mxio_root(lp)) < 0) {
         goto fail;
     }
@@ -366,7 +374,7 @@ mx_status_t command(int argc, char** argv, bool runbg) {
     launchpad_t* lp;
     mx_status_t status = NO_ERROR;
     int i;
-
+    fprintf(stdout,"Executing the command thingy\n");
     // Leading FOO=BAR become environment strings prepended to the
     // inherited environ, just like in a real Bourne shell.
     const char** envp = (const char**)environ;
@@ -417,33 +425,38 @@ mx_status_t command(int argc, char** argv, bool runbg) {
             goto done_no_lp;
         }
         settitle(argv[0]);
+        fprintf(stdout,"Running builtin - %s\n",argv[0]);
         builtins[i].func(argc, argv);
         settitle("mxsh");
         goto done_no_lp;
     }
-
+    fprintf(stdout,"Not a builtin, trying something else\n");
     //TODO: some kind of PATH processing
     if (argv[0][0] != '/') {
         snprintf(tmp, sizeof(tmp), "%s%s", "/boot/bin/", argv[0]);
         argv[0] = tmp;
     }
 
+    fprintf(stdout,"Doing lp_setup\n");
     if ((status = lp_setup(&lp, argc, (const char* const*) argv, envp)) < 0) {
         fprintf(stderr, "process setup failed (%d)\n", status);
         goto done_no_lp;
     }
-
+    //launchpad_vmo_from_file(argv[0]);
+    fprintf(stdout,"Loading from elf\n");
     if ((status = launchpad_elf_load(lp, launchpad_vmo_from_file(argv[0]))) < 0) {
         fprintf(stderr, "could not load binary '%s' (%d)\n", argv[0], status);
         goto done;
     }
+
+    fprintf(stdout,"load vdso\n");
 
     if ((status = launchpad_load_vdso(lp, MX_HANDLE_INVALID)) < 0) {
         fprintf(stderr, "could not load vDSO after binary '%s' (%d)\n",
                 argv[0], status);
         goto done;
     }
-
+    fprintf(stdout,"doing fd clone stuff\n");
     // unclone-able files will end up as /dev/null in the launched process
     launchpad_clone_fd(lp, 0, 0);
     launchpad_clone_fd(lp, (stdout_fd >= 0) ? stdout_fd : 1, 1);
@@ -473,6 +486,8 @@ mx_status_t command(int argc, char** argv, bool runbg) {
         joinproc(p);
     }
 done:
+    fprintf(stdout,"jumped to done\n");
+    //return status;
     launchpad_destroy(lp);
 done_no_lp:
     if (envp != (const char**)environ) {

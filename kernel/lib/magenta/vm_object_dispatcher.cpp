@@ -49,6 +49,7 @@ mx_ssize_t VmObjectDispatcher::Write(const void* user_data, mx_size_t length, ui
 
     size_t bytes_written;
     status_t err = vmo_->WriteUser(user_data, offset, length, &bytes_written);
+    vmo_->CacheSync(offset,length);
     if (err < 0)
         return err;
 
@@ -93,8 +94,9 @@ mx_status_t VmObjectDispatcher::Map(utils::RefPtr<VmAspace> aspace, uint32_t vmo
 
     if ((flags & MX_VM_FLAG_PERM_EXECUTE) == 0) {
         arch_mmu_flags |= ARCH_MMU_FLAG_PERM_NO_EXECUTE;
-    }
 
+    }
+    vmo_->CacheSync(offset,len);
     // TODO(teisenbe): Remove this when we have more symbolic debugging working.
     // This is a hack to make it easier to decode crash addresses
     const uint min_align_log2 = 20;
