@@ -25,6 +25,7 @@ void cprintf(const char* fmt, ...);
 
 mx_status_t devmgr_driver_add(mx_driver_t* driver);
 mx_status_t devmgr_driver_remove(mx_driver_t* driver);
+mx_status_t devmgr_driver_unbind(mx_driver_t* driver, mx_device_t* dev);
 
 mx_status_t devmgr_device_add(mx_device_t* dev, mx_device_t* parent);
 mx_status_t devmgr_device_remove(mx_device_t* dev);

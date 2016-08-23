@@ -275,6 +275,9 @@ static void devmgr_device_probe_all(mx_device_t* dev) {
                 // if not found, probe all built-in drivers
                 mx_driver_t* drv = NULL;
                 list_for_every_entry (&driver_list, drv, mx_driver_t, node) {
+                    if (drv->flags & DRV_FLAG_NO_AUTOBIND) {
+                        continue;
+                    }
                     if (devmgr_device_probe(dev, drv) == NO_ERROR) {
                         break;
                     }
@@ -593,6 +596,14 @@ mx_status_t devmgr_driver_add(mx_driver_t* drv) {
 mx_status_t devmgr_driver_remove(mx_driver_t* drv) {
     // TODO: implement
     return ERR_NOT_SUPPORTED;
+}
+
+mx_status_t devmgr_driver_unbind(mx_driver_t* drv, mx_device_t* dev) {
+    if (dev->owner != drv) {
+        return ERR_INVALID_ARGS;
+    }
+
+    return NO_ERROR;
 }
 
 #if !LIBDRIVER

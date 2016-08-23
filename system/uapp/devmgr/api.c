@@ -23,6 +23,12 @@ void driver_remove(mx_driver_t* drv) {
     DM_UNLOCK();
 }
 
+void driver_unbind(mx_driver_t* drv, mx_device_t* dev) {
+    DM_LOCK();
+    devmgr_driver_unbind(drv, dev);
+    DM_UNLOCK();
+}
+
 mx_status_t device_create(mx_device_t** dev, mx_driver_t* drv,
                           const char* name, mx_protocol_device_t* ops) {
     mx_status_t r;

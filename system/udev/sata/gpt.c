@@ -260,6 +260,7 @@ mx_driver_t _driver_gpt BUILTIN_DRIVER = {
         .bind = gpt_bind,
         .unbind = gpt_unbind,
     },
+    .flags = DRV_FLAG_NO_AUTOBIND,
     .binding = binding,
     .binding_size = sizeof(binding),
 };
