@@ -327,7 +327,24 @@ static status_t acpi_pcie_irq_swizzle(const pcie_device_state_t* dev, uint pin, 
     return NO_ERROR;
 }
 
-void platform_init_pcie(void) {
+void platform_pcie_init_info(pcie_init_info_t *out)
+{
+    *out = (pcie_init_info_t){
+        .ecam_windows         = NULL,
+        .ecam_window_count    = 0,
+        .mmio_window_lo       = { .bus_addr = pcie_mem_lo_base, .size = pcie_mem_lo_size },
+        .mmio_window_hi       = { .bus_addr = 0,                .size = 0 },
+        .pio_window           = { .bus_addr = pcie_pio_base,    .size = pcie_pio_size },
+        .legacy_irq_swizzle   = NULL,
+        .alloc_msi_block      = x86_alloc_msi_block,
+        .free_msi_block       = x86_free_msi_block,
+        .register_msi_handler = x86_register_msi_handler,
+        .mask_unmask_msi      = NULL,
+    };
+}
+
+void platform_init_pcie(void)
+{
     struct acpi_pcie_config config;
     status_t status = platform_find_pcie_config(&config);
     if (status != NO_ERROR) {
@@ -352,8 +369,8 @@ void platform_init_pcie(void) {
     // Configure the discovered PCIe IRQs
     for (uint i = 0; i < pcie_root_irq_map.num_irqs; ++i) {
         struct acpi_irq_signal *sig = &pcie_root_irq_map.irqs[i];
-        enum io_apic_irq_trigger_mode trig_mode = IRQ_TRIGGER_MODE_EDGE;
-        enum io_apic_irq_polarity polarity = IRQ_POLARITY_ACTIVE_LOW;
+        enum interrupt_trigger_mode trig_mode = IRQ_TRIGGER_MODE_EDGE;
+        enum interrupt_polarity polarity = IRQ_POLARITY_ACTIVE_LOW;
         if (sig->active_high) {
             polarity = IRQ_POLARITY_ACTIVE_HIGH;
         }

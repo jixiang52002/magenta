@@ -12,7 +12,7 @@
 #include <hw/usb.h>
 #include <hw/usb-hid.h>
 
-#include <system/listnode.h>
+#include <magenta/listnode.h>
 
 #include <stdint.h>
 #include <stddef.h>
@@ -32,15 +32,12 @@ typedef struct {
     mx_device_t* usbdev;
     mx_driver_t* drv;
 
-    usb_device_protocol_t* usb;
-    usb_endpoint_t* endpt;
     iotxn_t* txn;
 
     uint32_t flags;
     uint8_t proto;
     uint8_t interface;
 
-    usb_hid_descriptor_t* hid_desc;
     size_t hid_report_desc_len;
     const uint8_t* hid_report_desc;
 

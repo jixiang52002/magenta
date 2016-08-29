@@ -23,12 +23,12 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/handle.cpp \
     $(LOCAL_DIR)/interrupt_dispatcher.cpp \
     $(LOCAL_DIR)/io_mapping_dispatcher.cpp \
+    $(LOCAL_DIR)/io_port_client.cpp \
     $(LOCAL_DIR)/io_port_dispatcher.cpp \
-    $(LOCAL_DIR)/io_port_observer.cpp \
     $(LOCAL_DIR)/log_dispatcher.cpp \
     $(LOCAL_DIR)/magenta.cpp \
-    $(LOCAL_DIR)/msg_pipe_dispatcher.cpp \
-    $(LOCAL_DIR)/msg_pipe.cpp \
+    $(LOCAL_DIR)/message_pipe_dispatcher.cpp \
+    $(LOCAL_DIR)/message_pipe.cpp \
     $(LOCAL_DIR)/pci_device_dispatcher.cpp \
     $(LOCAL_DIR)/pci_interrupt_dispatcher.cpp \
     $(LOCAL_DIR)/pci_io_mapping_dispatcher.cpp \
@@ -46,7 +46,7 @@ MODULE_SRCS := \
 
 MODULE_DEPS := \
     lib/dpc \
-    lib/utils \
+    lib/mxtl \
     dev/udisplay \
 
 include make/module.mk

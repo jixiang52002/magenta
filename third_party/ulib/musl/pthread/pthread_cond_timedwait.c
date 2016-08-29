@@ -99,8 +99,6 @@ int __pthread_cond_timedwait(pthread_cond_t* restrict c, pthread_mutex_t* restri
     do
         e = __timedwait_cp(fut, seq, clock, ts);
     while (*fut == seq && !e);
-    if (e == EINTR)
-        e = 0;
 
     oldstate = a_cas(&node.state, WAITING, LEAVING);
 
@@ -167,7 +165,8 @@ done:
     return e;
 }
 
-int __private_cond_signal(pthread_cond_t* c, int n) {
+void __private_cond_signal(void* condvar, int n) {
+    pthread_cond_t* c = condvar;
     struct waiter *p, *first = 0;
     volatile int ref = 0;
     int cur;
@@ -203,8 +202,6 @@ int __private_cond_signal(pthread_cond_t* c, int n) {
     /* Allow first signaled waiter, if any, to proceed. */
     if (first)
         unlock(&first->barrier);
-
-    return 0;
 }
 
 weak_alias(__pthread_cond_timedwait, pthread_cond_timedwait);

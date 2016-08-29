@@ -14,7 +14,7 @@
 #include <ddk/device.h>
 #include <ddk/driver.h>
 
-#include <system/listnode.h>
+#include <magenta/listnode.h>
 
 #include <magenta/syscalls.h>
 #include <magenta/types.h>
@@ -265,7 +265,7 @@ static mx_status_t devmgr_device_probe(mx_device_t* dev, mx_driver_t* drv) {
     return NO_ERROR;
 }
 
-static void devmgr_device_probe_all(mx_device_t* dev) {
+static void devmgr_device_probe_all(mx_device_t* dev, bool autobind) {
     if ((dev->flags & DEV_FLAG_UNBINDABLE) == 0) {
         if (!device_is_bound(dev)) {
             // first, look for a specific driver binary for this device
@@ -273,6 +273,9 @@ static void devmgr_device_probe_all(mx_device_t* dev) {
                 // if not found, probe all built-in drivers
                 mx_driver_t* drv = NULL;
                 list_for_every_entry (&driver_list, drv, mx_driver_t, node) {
+                    if (autobind && drv->flags & DRV_FLAG_NO_AUTOBIND) {
+                        continue;
+                    }
                     if (devmgr_device_probe(dev, drv) == NO_ERROR) {
                         break;
                     }
@@ -287,37 +290,43 @@ static void devmgr_device_probe_all(mx_device_t* dev) {
     }
 }
 
-mx_status_t devmgr_device_init(mx_device_t* dev, mx_driver_t* driver,
-                               const char* name, mx_protocol_device_t* ops) {
+void devmgr_device_init(mx_device_t* dev, mx_driver_t* driver,
+                        const char* name, mx_protocol_device_t* ops) {
     xprintf("devmgr: init '%s' drv=%p, ops=%p\n", safename(name), driver, ops);
 
-    if (name == NULL)
-        return ERR_INVALID_ARGS;
-    if (strlen(name) > MX_DEVICE_NAME_MAX)
-        return ERR_INVALID_ARGS;
-
     memset(dev, 0, sizeof(mx_device_t));
-    strncpy(dev->namedata, name, MX_DEVICE_NAME_MAX);
-    dev->magic = MX_DEVICE_MAGIC;
+    dev->magic = DEV_MAGIC;
     dev->name = dev->namedata;
     dev->ops = ops;
     dev->driver = driver;
     list_initialize(&dev->children);
-    return NO_ERROR;
+
+    if (name == NULL) {
+        printf("devmgr: dev=%p has null name.\n", dev);
+        name = "invalid";
+        dev->magic = 0;
+    }
+
+    size_t len = strlen(name);
+    if (len >= MX_DEVICE_NAME_MAX) {
+        printf("devmgr: dev=%p name too large '%s'\n", dev, name);
+        len = MX_DEVICE_NAME_MAX - 1;
+        dev->magic = 0;
+    }
+
+    memcpy(dev->namedata, name, len);
+    dev->namedata[len] = 0;
 }
 
 mx_status_t devmgr_device_create(mx_device_t** out, mx_driver_t* driver,
                                  const char* name, mx_protocol_device_t* ops) {
     mx_device_t* dev = malloc(sizeof(mx_device_t));
-    if (dev == NULL)
+    if (dev == NULL) {
         return ERR_NO_MEMORY;
-    mx_status_t status = devmgr_device_init(dev, driver, name, ops);
-    if (status) {
-        free(dev);
-    } else {
-        *out = dev;
     }
-    return status;
+    devmgr_device_init(dev, driver, name, ops);
+    *out = dev;
+    return NO_ERROR;
 }
 
 void devmgr_device_set_bindable(mx_device_t* dev, bool bindable) {
@@ -336,6 +345,9 @@ void devmgr_device_set_bindable(mx_device_t* dev, bool bindable) {
 mx_status_t devmgr_device_add(mx_device_t* dev, mx_device_t* parent) {
     if (dev == NULL) {
         return ERR_INVALID_ARGS;
+    }
+    if (dev->magic != DEV_MAGIC) {
+        return ERR_BAD_STATE;
     }
     if (parent == NULL) {
         if (devmgr_is_remote) {
@@ -428,7 +440,7 @@ mx_status_t devmgr_device_add(mx_device_t* dev, mx_device_t* parent) {
 #endif
 
     // probe the device
-    devmgr_device_probe_all(dev);
+    devmgr_device_probe_all(dev, true);
 
     dev->flags &= (~DEV_FLAG_BUSY);
     return NO_ERROR;
@@ -447,6 +459,25 @@ static const char* removal_problem(uint32_t flags) {
     return "?";
 }
 
+static void devmgr_unbind_children(mx_device_t* dev) {
+    mx_device_t* child = NULL;
+    mx_device_t* temp = NULL;
+#if TRACE_ADD_REMOVE
+    printf("devmgr_unbind_children: %p(%s)\n", dev, safename(dev->name));
+#endif
+    list_for_every_entry_safe(&dev->children, child, temp, mx_device_t, node) {
+        // call child's unbind op
+        if (child->ops->unbind) {
+#if TRACE_ADD_REMOVE
+            printf("call unbind child: %p(%s)\n", child, safename(child->name));
+#endif
+            DM_UNLOCK();
+            child->ops->unbind(child);
+            DM_LOCK();
+        }
+    }
+}
+
 mx_status_t devmgr_device_remove(mx_device_t* dev) {
     if (dev->flags & (DEV_FLAG_DEAD | DEV_FLAG_BUSY | DEV_FLAG_INSTANCE)) {
         printf("device: %p(%s): cannot be removed (%s)\n",
@@ -457,6 +488,8 @@ mx_status_t devmgr_device_remove(mx_device_t* dev) {
     printf("device: %p(%s): is being removed\n", dev, safename(dev->name));
 #endif
     dev->flags |= DEV_FLAG_DEAD;
+
+    devmgr_unbind_children(dev);
 
     // remove entry from vfs to avoid any further open() attempts
 #if !LIBDRIVER
@@ -478,13 +511,8 @@ mx_status_t devmgr_device_remove(mx_device_t* dev) {
         list_delete(&dev->unode);
     }
 
-    // detach from owner, call unbind(), downref on behalf of owner
+    // detach from owner, downref on behalf of owner
     if (dev->owner) {
-        if (dev->owner->ops.unbind) {
-            DM_UNLOCK();
-            dev->owner->ops.unbind(dev->owner, dev);
-            DM_LOCK();
-        }
         dev->owner = NULL;
         dev_ref_release(dev);
     }
@@ -501,6 +529,32 @@ mx_status_t devmgr_device_remove(mx_device_t* dev) {
     return NO_ERROR;
 }
 
+mx_status_t devmgr_device_bind(mx_device_t* dev, const char* drv_name) {
+    if (device_is_bound(dev)) {
+        return ERR_INVALID_ARGS;
+    }
+    if (dev->flags & DEV_FLAG_UNBINDABLE) {
+        return NO_ERROR;
+    }
+    dev->flags |= DEV_FLAG_BUSY;
+    if (!drv_name) {
+        devmgr_device_probe_all(dev, false);
+    } else {
+        // bind the driver with matching name
+        mx_driver_t* drv = NULL;
+        list_for_every_entry (&driver_list, drv, mx_driver_t, node) {
+            if (strcmp(drv->name, drv_name)) {
+                continue;
+            }
+            if (devmgr_device_probe(dev, drv) == NO_ERROR) {
+                break;
+            }
+        }
+    }
+    dev->flags &= ~DEV_FLAG_BUSY;
+    return NO_ERROR;
+}
+
 mx_status_t devmgr_device_rebind(mx_device_t* dev) {
     dev->flags |= DEV_FLAG_REBIND;
 
@@ -511,19 +565,16 @@ mx_status_t devmgr_device_rebind(mx_device_t* dev) {
         devmgr_device_remove(child);
     }
 
-    // detach from owner and call unbind, downref
+    devmgr_unbind_children(dev);
+
+    // detach from owner and downref
     if (dev->owner) {
-        if (dev->owner->ops.unbind) {
-            DM_UNLOCK();
-            dev->owner->ops.unbind(dev->owner, dev);
-            DM_LOCK();
-        }
         dev->owner = NULL;
         dev_ref_release(dev);
     }
 
     // probe the device again to bind
-    devmgr_device_probe_all(dev);
+    devmgr_device_probe_all(dev, false);
 
     dev->flags &= ~DEV_FLAG_REBIND;
     return NO_ERROR;
@@ -591,6 +642,16 @@ mx_status_t devmgr_driver_add(mx_driver_t* drv) {
 mx_status_t devmgr_driver_remove(mx_driver_t* drv) {
     // TODO: implement
     return ERR_NOT_SUPPORTED;
+}
+
+mx_status_t devmgr_driver_unbind(mx_driver_t* drv, mx_device_t* dev) {
+    if (dev->owner != drv) {
+        return ERR_INVALID_ARGS;
+    }
+    dev->owner = NULL;
+    dev_ref_release(dev);
+
+    return NO_ERROR;
 }
 
 #if !LIBDRIVER

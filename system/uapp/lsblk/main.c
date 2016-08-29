@@ -12,8 +12,8 @@
 #include <unistd.h>
 #include <limits.h>
 
-#include <ddk/protocol/block.h>
-#include <ddk/hexdump.h>
+#include <magenta/device/block.h>
+#include <hexdump/hexdump.h>
 
 #define DEV_BLOCK "/dev/class/block"
 

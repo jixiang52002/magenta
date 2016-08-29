@@ -220,11 +220,7 @@ static mx_status_t usb_hid_open_dev(mx_device_t* dev, mx_device_t** dev_out, uin
         return ERR_NO_MEMORY;
     }
 
-    status = device_init(&inst->dev, hid->drv, "usb-hid", &usb_hid_instance_proto);
-    if (status != NO_ERROR) {
-        usb_hid_cleanup_instance(inst);
-        return status;
-    }
+    device_init(&inst->dev, hid->drv, "usb-hid", &usb_hid_instance_proto);
 
     inst->dev.protocol_id = MX_PROTOCOL_INPUT;
     status = device_add_instance(&inst->dev, dev);
@@ -242,6 +238,11 @@ static mx_status_t usb_hid_open_dev(mx_device_t* dev, mx_device_t** dev_out, uin
     return NO_ERROR;
 }
 
+static void usb_hid_unbind_dev(mx_device_t* dev) {
+    usb_hid_dev_t* hid = to_hid_dev(dev);
+    usb_hid_process_closed(hid);
+}
+
 static mx_status_t usb_hid_release_dev(mx_device_t* dev) {
     usb_hid_dev_t* hid = to_hid_dev(dev);
     usb_hid_cleanup_dev(hid);
@@ -250,5 +251,6 @@ static mx_status_t usb_hid_release_dev(mx_device_t* dev) {
 
 mx_protocol_device_t usb_hid_proto = {
     .open = usb_hid_open_dev,
+    .unbind = usb_hid_unbind_dev,
     .release = usb_hid_release_dev,
 };

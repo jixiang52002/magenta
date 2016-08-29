@@ -14,11 +14,11 @@
 
 #include "mxsh.h"
 
+#include <hexdump/hexdump.h>
 #include <launchpad/launchpad.h>
 #include <magenta/syscalls.h>
 #include <mxio/vfs.h>
-#include <ddk/hexdump.h>
-#include <system/listnode.h>
+#include <magenta/listnode.h>
 
 static int mxc_dump(int argc, char** argv) {
     int fd;
@@ -67,7 +67,7 @@ static int mxc_echo(int argc, char** argv) {
 
 static int mxc_msleep(int argc, char** argv) {
     if (argc == 2) {
-        mx_nanosleep(atoi(argv[1]) * 1000000ULL);
+        mx_nanosleep(MX_MSEC(atoi(argv[1])));
     }
     return 0;
 }

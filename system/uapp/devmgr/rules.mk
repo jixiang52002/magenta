@@ -44,13 +44,13 @@ MODULE_SRCS += \
 
 MODULE_STATIC_LIBS := \
     ulib/ddk \
+    ulib/hexdump \
     ulib/hid \
     ulib/launchpad \
     ulib/elfload \
     ulib/mxio \
-    ulib/gfx \
-    ulib/magenta \
+    ulib/gfx
 
-MODULE_LIBS := ulib/musl
+MODULE_LIBS := ulib/magenta ulib/musl
 
 include make/module.mk

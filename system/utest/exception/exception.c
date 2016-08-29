@@ -11,12 +11,12 @@
 #include <magenta/processargs.h>
 #include <magenta/syscalls.h>
 #include <mxio/util.h>
-#include <system/compiler.h>
+#include <magenta/compiler.h>
 #include <test-utils/test-utils.h>
 #include <unittest/unittest.h>
 
 // 0.5 seconds
-#define WATCHDOG_DURATION_TICK ((int64_t) 500 * 1000 * 1000)
+#define WATCHDOG_DURATION_TICK MX_MSEC(500)
 // 5 seconds
 #define WATCHDOG_DURATION_TICKS 10
 

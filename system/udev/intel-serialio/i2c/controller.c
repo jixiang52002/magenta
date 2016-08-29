@@ -15,7 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <system/listnode.h>
+#include <magenta/listnode.h>
 #include <threads.h>
 
 #include "controller.h"
@@ -392,10 +392,8 @@ mx_status_t intel_serialio_bind_i2c(mx_driver_t* drv, mx_device_t* dev) {
 
     char name[MX_DEVICE_NAME_MAX];
     snprintf(name, sizeof(name), "i2c-bus-%04x", pci_config->device_id);
-    status = device_init(&device->device, drv, name,
-                         &intel_serialio_i2c_device_proto);
-    if (status < 0)
-        goto fail;
+    device_init(&device->device, drv, name,
+                &intel_serialio_i2c_device_proto);
 
     // Configure the I2C controller. We don't need to hold the lock because
     // nobody else can see this controller yet.

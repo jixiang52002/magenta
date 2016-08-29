@@ -7,11 +7,12 @@
 #include <ddk/common/usb.h>
 #include <ddk/device.h>
 #include <ddk/driver.h>
-#include <ddk/protocol/usb-device.h>
+#include <ddk/protocol/usb-bus.h>
 #include <hw/usb-hub.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <system/listnode.h>
+#include <string.h>
+#include <magenta/listnode.h>
 #include <threads.h>
 
 //#define TRACE 1
@@ -29,25 +30,19 @@ typedef struct usb_hub {
 
     // Underlying USB device
     mx_device_t* usb_device;
-    usb_device_protocol_t* device_protocol;
+
+    mx_device_t* bus_device;
+    usb_bus_protocol_t* bus_protocol;
 
     usb_speed_t hub_speed;
     int num_ports;
+    // delay after port power in microseconds
+    mx_time_t power_on_delay;
 
-    usb_request_t* status_request;
+    iotxn_t* status_request;
     completion_t completion;
 } usb_hub_t;
 #define get_hub(dev) containerof(dev, usb_hub_t, device)
-
-static mx_status_t queue_status_request(usb_hub_t* hub) {
-    usb_request_t* request = hub->status_request;
-    request->transfer_length = request->buffer_length;
-    return hub->device_protocol->queue_request(hub->usb_device, request);
-}
-
-static void free_interrupt_request(usb_hub_t* hub, usb_request_t* request) {
-    hub->device_protocol->free_request(hub->usb_device, request);
-}
 
 static mx_status_t usb_hub_get_port_status(usb_hub_t* hub, int port, usb_port_status_t* status) {
     mx_status_t result = usb_get_status(hub->usb_device, USB_RECIP_PORT, port, status, sizeof(*status));
@@ -74,18 +69,19 @@ static usb_speed_t usb_hub_get_port_speed(usb_hub_t* hub, int port) {
     }
 }
 
-static void usb_hub_interrupt_complete(usb_request_t* request) {
-    xprintf("usb_hub_interrupt_complete got %d %d\n", request->status, request->transfer_length);
-    usb_hub_t* hub = (usb_hub_t*)request->client_data;
+static void usb_hub_interrupt_complete(iotxn_t* txn, void* cookie) {
+    xprintf("usb_hub_interrupt_complete got %d %lld\n", txn->status, txn->actual);
+    usb_hub_t* hub = (usb_hub_t*)cookie;
     completion_signal(&hub->completion);
 }
 
 static void usb_hub_enable_port(usb_hub_t* hub, int port) {
     usb_set_feature(hub->usb_device, USB_RECIP_PORT, USB_FEATURE_PORT_POWER, port);
+    usleep(hub->power_on_delay);
 }
 
 static void usb_hub_port_connected(usb_hub_t* hub, int port) {
-    // USB 2.0 spec section 9.1.2 recommends 100ms delay before enumerating
+    // USB 2.0 spec section 7.1.7.3 recommends 100ms between connect and reset
     usleep(100 * 1000);
 
     xprintf("port %d usb_hub_port_connected\n", port);
@@ -94,26 +90,29 @@ static void usb_hub_port_connected(usb_hub_t* hub, int port) {
 
 static void usb_hub_port_disconnected(usb_hub_t* hub, int port) {
     xprintf("port %d usb_hub_port_disconnected\n", port);
-    hub->device_protocol->hub_device_removed(hub->usb_device, port);
+    hub->bus_protocol->hub_device_removed(hub->bus_device, hub->usb_device, port);
 }
 
 static void usb_hub_port_reset(usb_hub_t* hub, int port) {
+    // USB 2.0 spec section 9.1.2 recommends 100ms delay before enumerating
+    usleep(100 * 1000);
+
     xprintf("port %d usb_hub_port_reset\n", port);
     usb_speed_t speed = usb_hub_get_port_speed(hub, port);
     if (speed != USB_SPEED_UNDEFINED) {
-        xprintf("calling hub_device_added(%d %d)\n", port, speed);
-        hub->device_protocol->hub_device_added(hub->usb_device, port, speed);
+        xprintf("calling device_added(%d %d)\n", port, speed);
+        hub->bus_protocol->hub_device_added(hub->bus_device, hub->usb_device, port, speed);
     }
 }
 
 static void usb_hub_handle_port_status(usb_hub_t* hub, int port, usb_port_status_t* status) {
     if (status->wPortChange & USB_PORT_CONNECTION) {
+        usb_clear_feature(hub->usb_device, USB_RECIP_PORT, USB_FEATURE_C_PORT_CONNECTION, port);
         if (status->wPortStatus & USB_PORT_CONNECTION) {
             usb_hub_port_connected(hub, port);
         } else {
             usb_hub_port_disconnected(hub, port);
         }
-        usb_clear_feature(hub->usb_device, USB_RECIP_PORT, USB_FEATURE_C_PORT_CONNECTION, port);
     }
     if (status->wPortChange & USB_PORT_ENABLE) {
         xprintf("USB_PORT_ENABLE\n");
@@ -128,27 +127,33 @@ static void usb_hub_handle_port_status(usb_hub_t* hub, int port, usb_port_status
         usb_clear_feature(hub->usb_device, USB_RECIP_PORT, USB_FEATURE_C_PORT_OVER_CURRENT, port);
     }
     if (status->wPortChange & USB_PORT_RESET) {
+        usb_clear_feature(hub->usb_device, USB_RECIP_PORT, USB_FEATURE_C_PORT_RESET, port);
         if (!(status->wPortStatus & USB_PORT_RESET)) {
             usb_hub_port_reset(hub, port);
         }
-        usb_clear_feature(hub->usb_device, USB_RECIP_PORT, USB_FEATURE_C_PORT_RESET, port);
     }
+}
+
+static void usb_hub_unbind(mx_device_t* device) {
+    usb_hub_t* hub = get_hub(device);
+    device_remove(&hub->device);
 }
 
 static mx_status_t usb_hub_release(mx_device_t* device) {
     usb_hub_t* hub = get_hub(device);
-    hub->device_protocol->free_request(hub->usb_device, hub->status_request);
+    hub->status_request->ops->release(hub->status_request);
     free(hub);
     return NO_ERROR;
 }
 
 static mx_protocol_device_t usb_hub_device_proto = {
+    .unbind = usb_hub_unbind,
     .release = usb_hub_release,
 };
 
 static int usb_hub_thread(void* arg) {
     usb_hub_t* hub = (usb_hub_t*)arg;
-    usb_request_t* request = hub->status_request;
+    iotxn_t* txn = hub->status_request;
 
     usb_hub_descriptor_t desc;
     int desc_type = (hub->hub_speed == USB_SPEED_SUPER ? USB_HUB_DESC_TYPE_SS : USB_HUB_DESC_TYPE);
@@ -159,13 +164,19 @@ static int usb_hub_thread(void* arg) {
         return result;
     }
 
-    result = hub->device_protocol->configure_hub(hub->usb_device, hub->hub_speed, &desc);
+    result = hub->bus_protocol->configure_hub(hub->bus_device, hub->usb_device, hub->hub_speed, &desc);
     if (result < 0) {
         printf("configure_hub failed: %d\n", result);
         return result;
     }
 
     int num_ports = desc.bNbrPorts;
+    // power on delay in microseconds
+    hub->power_on_delay = desc.bPowerOn2PwrGood * 2 * 1000;
+    if (hub->power_on_delay < 100 * 1000) {
+        // USB 2.0 spec section 9.1.2 recommends atleast 100ms delay after power on
+        hub->power_on_delay = 100 * 1000;
+    }
 
     for (int i = 1; i <= num_ports; i++) {
         usb_hub_enable_port(hub, i);
@@ -178,17 +189,22 @@ static int usb_hub_thread(void* arg) {
         return result;
     }
 
-    queue_status_request(hub);
+    // bit field for port status bits
+    uint8_t status_buf[128 / 8];
+    memset(status_buf, 0, sizeof(status_buf));
 
     // This loop handles events from our interrupt endpoint
     while (1) {
+        completion_reset(&hub->completion);
+        iotxn_queue(hub->usb_device, txn);
         completion_wait(&hub->completion, MX_TIME_INFINITE);
-        if (request->status != NO_ERROR) {
+        if (txn->status != NO_ERROR) {
             break;
         }
 
-        uint8_t* bitmap = request->buffer;
-        uint8_t* bitmap_end = bitmap + request->transfer_length;
+        txn->ops->copyfrom(txn, status_buf, txn->actual, 0);
+        uint8_t* bitmap = status_buf;
+        uint8_t* bitmap_end = bitmap + txn->actual;
 
         // bit zero is hub status
         if (bitmap[0] & 1) {
@@ -212,36 +228,40 @@ static int usb_hub_thread(void* arg) {
                 bit = 0;
             }
         }
-
-        completion_reset(&hub->completion);
-        queue_status_request(hub);
     }
 
     return NO_ERROR;
 }
 
 static mx_status_t usb_hub_bind(mx_driver_t* driver, mx_device_t* device) {
-    usb_device_protocol_t* device_protocol = NULL;
-    usb_request_t* req = NULL;
-
-    if (device_get_protocol(device, MX_PROTOCOL_USB_DEVICE, (void**)&device_protocol)) {
+    mx_device_t* bus_device = device->parent;
+    usb_bus_protocol_t* bus_protocol;
+    if (device_get_protocol(bus_device, MX_PROTOCOL_USB_BUS, (void**)&bus_protocol)) {
+        printf("usb_hub_bind could not find bus device\n");
         return ERR_NOT_SUPPORTED;
     }
-
-    usb_device_config_t* device_config;
-    mx_status_t status = device_protocol->get_config(device, &device_config);
-    if (status < 0)
-        return status;
 
     // find our interrupt endpoint
-    usb_configuration_t* config = &device_config->configurations[0];
-    usb_interface_t* intf = &config->interfaces[0];
-    if (intf->num_endpoints != 1) {
-        printf("usb_hub_bind wrong number of endpoints: %d\n", intf->num_endpoints);
+    usb_desc_iter_t iter;
+    mx_status_t result = usb_desc_iter_init(device, &iter);
+    if (result < 0) return result;
+
+    usb_interface_descriptor_t* intf = usb_desc_iter_next_interface(&iter, true);
+    if (!intf || intf->bNumEndpoints != 1) {
+        usb_desc_iter_release(&iter);
         return ERR_NOT_SUPPORTED;
     }
-    usb_endpoint_t* endp = &intf->endpoints[0];
-    if (endp->type != USB_ENDPOINT_INTERRUPT) {
+
+    uint8_t ep_addr = 0;
+    uint16_t max_packet_size = 0;
+    usb_endpoint_descriptor_t* endp = usb_desc_iter_next_endpoint(&iter);
+    if (endp && usb_ep_type(endp) == USB_ENDPOINT_INTERRUPT) {
+        ep_addr = endp->bEndpointAddress;
+        max_packet_size = usb_ep_max_packet(endp);
+    }
+    usb_desc_iter_release(&iter);
+
+    if (!ep_addr) {
         return ERR_NOT_SUPPORTED;
     }
 
@@ -251,23 +271,23 @@ static mx_status_t usb_hub_bind(mx_driver_t* driver, mx_device_t* device) {
         return ERR_NO_MEMORY;
     }
 
-    status = device_init(&hub->device, driver, "usb-hub", &usb_hub_device_proto);
-    if (status != NO_ERROR) {
-        goto fail;
-    }
+    device_init(&hub->device, driver, "usb-hub", &usb_hub_device_proto);
 
     hub->usb_device = device;
-    hub->device_protocol = device_protocol;
-    hub->hub_speed = device_protocol->get_speed(device);
+    hub->hub_speed = usb_get_speed(device);
+    hub->bus_device = bus_device;
+    hub->bus_protocol = bus_protocol;
 
-    req = device_protocol->alloc_request(device, endp, endp->maxpacketsize);
-    if (!req) {
+    mx_status_t status;
+    iotxn_t* txn = usb_alloc_iotxn(ep_addr, max_packet_size, 0);
+    if (!txn) {
         status = ERR_NO_MEMORY;
         goto fail;
     }
-    req->complete_cb = usb_hub_interrupt_complete;
-    req->client_data = hub;
-    hub->status_request = req;
+    txn->length = max_packet_size;
+    txn->complete_cb = usb_hub_interrupt_complete;
+    txn->cookie = hub;
+    hub->status_request = txn;
 
     thrd_t thread;
     int ret = thrd_create_with_name(&thread, usb_hub_thread, hub, "usb_hub_thread");
@@ -278,21 +298,11 @@ static mx_status_t usb_hub_bind(mx_driver_t* driver, mx_device_t* device) {
     return NO_ERROR;
 
 fail:
-    if (req) {
-        device_protocol->free_request(device, req);
+    if (txn) {
+        txn->ops->release(txn);
     }
     free(hub);
     return status;
-}
-
-static mx_status_t usb_hub_unbind(mx_driver_t* drv, mx_device_t* dev) {
-    //TODO: should avoid using dev->childern
-    mx_device_t* child = NULL;
-    mx_device_t* temp = NULL;
-    list_for_every_entry_safe (&dev->children, child, temp, mx_device_t, node) {
-        device_remove(child);
-    }
-    return NO_ERROR;
 }
 
 static mx_bind_inst_t binding[] = {
@@ -304,7 +314,6 @@ mx_driver_t _driver_usb_hub BUILTIN_DRIVER = {
     .name = "usb-hub",
     .ops = {
         .bind = usb_hub_bind,
-        .unbind = usb_hub_unbind,
     },
     .binding = binding,
     .binding_size = sizeof(binding),

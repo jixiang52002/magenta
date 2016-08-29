@@ -4,6 +4,7 @@
 #include "malloc_impl.h"
 #include "pthread_impl.h"
 #include "stdio_impl.h"
+#include "tls_impl.h"
 #include <ctype.h>
 #include <dlfcn.h>
 #include <elf.h>
@@ -1495,8 +1496,7 @@ dl_start_return_t __dls3(void* start_arg) {
             logger = handles[i];
             break;
         case MX_HND_TYPE_PROC_SELF:
-            if (0) // TODO(mcgrathr): later
-                libc.proc = handles[i];
+            libc.proc = handles[i];
             break;
         default:
             mx_handle_close(handles[i]);

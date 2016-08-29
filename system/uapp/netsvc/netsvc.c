@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "netsvc.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,7 +17,7 @@
 #include <mxio/util.h>
 #include <launchpad/launchpad.h>
 
-#include <system/netboot.h>
+#include <magenta/netboot.h>
 
 #define MAX_LOG_LINE (MX_LOG_RECORD_MAX + 32)
 
@@ -94,8 +96,7 @@ void udp6_recv(void* data, size_t len,
     if (dport == NB_SERVER_PORT) {
         nbmsg* msg = data;
         if ((len < (sizeof(nbmsg) + 1)) ||
-            (msg->magic != NB_MAGIC) ||
-            (msg->arg != 0)) {
+            (msg->magic != NB_MAGIC)) {
             return;
         }
         // null terminate the payload
@@ -124,6 +125,19 @@ void udp6_recv(void* data, size_t len,
                 return;
             }
             break;
+        case NB_OPEN:
+            netfile_open((char*)msg->data, msg->cookie, msg->arg, saddr, sport, dport);
+            break;
+        case NB_READ:
+            netfile_read(msg->cookie, msg->arg, saddr, sport, dport);
+            break;
+        case NB_WRITE:
+            len--; // NB NUL-terminator is not part of the data
+            netfile_write((char*)msg->data, len, msg->cookie, msg->arg, saddr, sport, dport);
+            break;
+        case NB_CLOSE:
+            netfile_close(msg->cookie, saddr, sport, dport);
+            break;
         }
         return;
     }
@@ -145,10 +159,7 @@ void udp6_recv(void* data, size_t len,
     }
 }
 
-#define TIME_MS(n) (((uint64_t)(n)) * 1000000ULL)
-
 int main(int argc, char** argv) {
-    mx_time_t delay = TIME_MS(200);
     logpacket_t pkt;
     int len = 0;
     if ((loghandle = mx_log_create(MX_LOG_FLAG_READABLE)) < 0) {
@@ -156,15 +167,9 @@ int main(int argc, char** argv) {
     }
 
     printf("netsvc: main()\n");
-    //TODO: non-polling startup once possible
-    for (;;) {
-        mx_nanosleep(delay);
-        if (netifc_open() == 0) {
-            break;
-        }
-        while (delay < TIME_MS(1000)) {
-            delay += TIME_MS(100);
-        }
+    if (netifc_open() != 0) {
+        printf("netsvc: fatal error initialzing network\n");
+        return -1;
     }
 
     printf("netsvc: start\n");

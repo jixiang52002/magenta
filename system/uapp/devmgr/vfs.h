@@ -7,19 +7,17 @@
 #include <ddk/device.h>
 #include <magenta/types.h>
 #include <mxio/vfs.h>
-#include <system/listnode.h>
+#include <magenta/listnode.h>
 #include <threads.h>
 
-
-typedef struct vfs vfs_t;
-typedef struct vfs_ops vfs_ops_t;
 typedef struct dnode dnode_t;
 
 struct vnode {
     vnode_ops_t* ops;
-    vfs_t* vfs;
     uint32_t flags;
     uint32_t refcount;
+    uint32_t seqcount;
+    mx_handle_t remote;
     dnode_t* dnode;
 
     void* pdata;
@@ -28,16 +26,15 @@ struct vnode {
     // all dnodes that point at this vnode
     list_node_t dn_list;
     uint32_t dn_count;
+
+    // all directory watchers
+    list_node_t watch_list;
 };
 
-struct vfs_ops {
-};
-
-struct vfs {
-    vfs_ops_t* ops;
-    vnode_t* root;
-    mx_handle_t remote;
-};
+typedef struct vnode_watcher {
+    list_node_t node;
+    mx_handle_t h;
+} vnode_watcher_t;
 
 #define V_FLAG_DEVICE 1
 #define V_FLAG_REMOTE 2
@@ -49,7 +46,7 @@ mx_status_t vfs_fill_dirent(vdirent_t* de, size_t delen,
                             const char* name, size_t len, uint32_t type);
 
 
-
+void vfs_notify_add(vnode_t* vndir, const char* name, size_t namelen);
 void vfs_init(vnode_t* root);
 
 // generate mxremoteio handles

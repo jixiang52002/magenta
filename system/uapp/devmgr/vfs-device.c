@@ -6,7 +6,7 @@
 #include "dnode.h"
 #include "devmgr.h"
 
-#include <system/listnode.h>
+#include <magenta/listnode.h>
 
 #include <ddk/device.h>
 
@@ -78,6 +78,7 @@ static vnode_t vnd_root = {
     .refcount = 1,
     .dnode = &vnd_root_dn,
     .dn_list = LIST_INITIAL_VALUE(vnd_root.dn_list),
+    .watch_list = LIST_INITIAL_VALUE(vnd_root.watch_list),
 };
 
 vnode_t* devfs_get_root(void) {
@@ -110,6 +111,7 @@ static mx_status_t _devfs_add_node(vnode_t** out, vnode_t* parent, const char* n
         return ERR_NO_MEMORY;
     }
     vn->ops = &vn_device_ops;
+    list_initialize(&vn->watch_list);
 
     if (dev) {
         // attach device
@@ -129,6 +131,8 @@ static mx_status_t _devfs_add_node(vnode_t** out, vnode_t* parent, const char* n
     // add to parent dnode list
     dn_add_child(parent->dnode, dn);
     vn->dnode = dn;
+
+    vfs_notify_add(parent, name, len);
 
     xprintf("devfs_add_node() vn=%p\n", vn);
     if (dev) {
@@ -153,8 +157,9 @@ static mx_status_t _devfs_add_link(vnode_t* parent, const char* name, mx_device_
         //TODO: something smarter
         // right now we have so few devices and instances this is not a problem
         // but it clearly is not optimal
-        for (unsigned n = 0; n < 100; n++) {
-            snprintf(tmp, sizeof(tmp), "%03u", n);
+        // seqcount is used to avoid rapidly re-using device numbers
+        for (unsigned n = 0; n < 1000; n++) {
+            snprintf(tmp, sizeof(tmp), "%03u", (parent->seqcount++) % 1000);
             if (dn_lookup(parent->dnode, &dn, tmp, 3) != NO_ERROR) {
                 name = tmp;
                 len = 3;
@@ -173,6 +178,7 @@ got_name:
         return r;
     }
     dn_add_child(parent->dnode, dn);
+    vfs_notify_add(parent, name, len);
     return NO_ERROR;
 }
 
@@ -194,6 +200,10 @@ mx_status_t devfs_add_link(vnode_t* parent, const char* name, mx_device_t* dev) 
 
 mx_status_t devfs_remove(vnode_t* vn) {
     mtx_lock(&vfs_lock);
+
+    // hold a reference to ourselves so the rug doesn't get pulled out from under us
+    vn_acquire(vn);
+
     xprintf("devfs_remove(%p)\n", vn);
     if (vn->pdata) {
         mx_device_t* dev = vn->pdata;
@@ -217,6 +227,8 @@ mx_status_t devfs_remove(vnode_t* vn) {
         }
         dn_delete(dn);
     }
+
+    vn_release(vn);
     mtx_unlock(&vfs_lock);
 
     // with all dnodes destroyed, nothing should hold a reference

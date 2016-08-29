@@ -91,7 +91,7 @@ MAGENTA_SYSCALL_DEF(3, 3, 46, mx_status_t, object_signal, mx_handle_t handle, ui
 
 // Threads
 MAGENTA_SYSCALL_DEF(4, 4, 50, mx_handle_t, thread_create, mx_handle_t process, USER_PTR(const char) name, uint32_t name_len, uint32_t flags)
-MAGENTA_SYSCALL_DEF(4, 4, 51, mx_status_t, thread_start, mx_handle_t handle, uintptr_t thread_entry, uintptr_t stack, uintptr_t arg)
+MAGENTA_SYSCALL_DEF(5, 5, 51, mx_status_t, thread_start, mx_handle_t handle, uintptr_t thread_entry, uintptr_t stack, uintptr_t arg1, uintptr_t arg2)
 MAGENTA_SYSCALL_DEF_WITH_ATTRS(0, 0, 52, void, thread_exit, (noreturn), void)
 MAGENTA_SYSCALL_DEF(3, 3, 53, mx_status_t, thread_arch_prctl, mx_handle_t handle, uint32_t op, USER_PTR(uintptr_t) value_ptr)
 
@@ -171,6 +171,7 @@ MAGENTA_DDKCALL_DEF(4, 4, 190, mx_status_t, pci_query_irq_mode_caps, mx_handle_t
                     mx_pci_irq_mode_t mode, uint32_t* out_max_irqs)
 MAGENTA_DDKCALL_DEF(4, 4, 191, mx_status_t, pci_set_irq_mode, mx_handle_t handle, mx_pci_irq_mode_t mode,
                     uint32_t requested_irq_count)
+MAGENTA_DDKCALL_DEF(3, 3, 192, mx_status_t, pci_init, mx_handle_t handle, USER_PTR(mx_pci_init_arg_t) init_buf, uint32_t len)
 
 // I/O mapping objects
 MAGENTA_DDKCALL_DEF(3, 3, 200, mx_status_t, io_mapping_get_info, mx_handle_t handle, void** out_vaddr,

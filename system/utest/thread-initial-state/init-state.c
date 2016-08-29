@@ -6,7 +6,7 @@
 #include <magenta/syscalls.h>
 #include <unittest/unittest.h>
 #include <stdio.h>
-#include <system/compiler.h>
+#include <magenta/compiler.h>
 
 extern void thread_entry(uintptr_t arg);
 
@@ -31,7 +31,9 @@ mx_handle_t raw_thread_create(void (*thread_entry)(uintptr_t arg), uintptr_t arg
     if (handle < 0)
         return handle;
 
-    mx_status_t status = mx_thread_start(handle, (uintptr_t)thread_entry, (uintptr_t)stack + sizeof(stack), arg);
+    mx_status_t status = mx_thread_start(handle, (uintptr_t)thread_entry,
+                                         (uintptr_t)stack + sizeof(stack),
+                                         arg, 0);
     if (status < 0)
         return status;
 

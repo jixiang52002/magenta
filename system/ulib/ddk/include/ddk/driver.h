@@ -5,8 +5,8 @@
 #pragma once
 
 #include <magenta/types.h>
-#include <system/listnode.h>
-#include <system/compiler.h>
+#include <magenta/listnode.h>
+#include <magenta/compiler.h>
 #include <stdint.h>
 
 typedef struct mx_device mx_device_t;
@@ -25,18 +25,18 @@ typedef struct mx_driver_ops {
     // Requests that the driver bind to the provided device,
     // initialize it, and publish and children.
 
-    mx_status_t (*unbind)(mx_driver_t* driver, mx_device_t* device);
-    // Notifies the driver that the device is being removed (has
-    // been hot unplugged, etc).
-
     mx_status_t (*release)(mx_driver_t* driver);
     // Last call before driver is unloaded.
 } mx_driver_ops_t;
+
+#define DRV_FLAG_NO_AUTOBIND 0x00000001
 
 struct mx_driver {
     const char* name;
 
     mx_driver_ops_t ops;
+
+    uint32_t flags;
 
     struct list_node node;
 
@@ -53,8 +53,8 @@ struct mx_driver_binding {
 // Device Manager API
 mx_status_t device_create(mx_device_t** device, mx_driver_t* driver,
                           const char* name, mx_protocol_device_t* ops);
-mx_status_t device_init(mx_device_t* device, mx_driver_t* driver,
-                        const char* name, mx_protocol_device_t* ops);
+void device_init(mx_device_t* device, mx_driver_t* driver,
+                 const char* name, mx_protocol_device_t* ops);
 // Devices are created or (if embedded in a driver-specific structure)
 // initialized with the above functions.  The mx_device_t will be completely
 // written during initialization, and after initialization and before calling
@@ -72,6 +72,7 @@ void device_set_bindable(mx_device_t* dev, bool bindable);
 
 void driver_add(mx_driver_t* driver);
 void driver_remove(mx_driver_t* driver);
+void driver_unbind(mx_driver_t* driver, mx_device_t* dev);
 
 // panic is for handling non-recoverable, non-reportable fatal
 // errors in a way that will get logged.  Right now this just

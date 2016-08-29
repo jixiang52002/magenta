@@ -1,4 +1,6 @@
 #include "libc.h"
+#include "pthread_impl.h"
+#include "tls_impl.h"
 #include <elf.h>
 #include <stdatomic.h>
 #include <string.h>
@@ -8,8 +10,6 @@
 #include <runtime/processargs.h>
 #include <runtime/thread.h>
 
-void __init_tls(mxr_thread_t*);
-
 static void dummy(void) {}
 weak_alias(dummy, _init);
 
@@ -18,8 +18,6 @@ __attribute__((__weak__, __visibility__("hidden"))) extern void (*const __init_a
 
 static void dummy1(void* p) {}
 weak_alias(dummy1, __init_ssp);
-
-#define AUX_CNT 38
 
 void __init_security(void) {
 // TODO(kulakowski) Re-enable this once we have file descriptors up.
@@ -115,8 +113,7 @@ _Noreturn void __libc_start_main(int (*main)(int, char**, char**),
             // just for cleanliness switch to the "main" one.
             if (libc.proc != MX_HANDLE_INVALID)
                 mx_handle_close(libc.proc);
-            if (0) // TODO(mcgrathr): later
-                libc.proc = handles[i];
+            libc.proc = handles[i];
             handles[i] = MX_HANDLE_INVALID;
             handle_info[i] = 0;
             break;

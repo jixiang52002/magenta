@@ -1,3 +1,9 @@
+// Copyright 2016 The Fuchsia Authors
+//
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT
+
 #include <assert.h>
 #include <debug.h>
 #include <err.h>
@@ -286,7 +292,7 @@ void AcpiOsFree(void *Memory) {
  *         executing thread. The value -1 is reserved and must not be returned
  *         by this interface.
  */
-static_assert(sizeof(ACPI_THREAD_ID) >= sizeof(uintptr_t));
+static_assert(sizeof(ACPI_THREAD_ID) >= sizeof(uintptr_t), "");
 ACPI_THREAD_ID AcpiOsGetThreadId() {
     // Just use the address of the thread_t
     return (uintptr_t)get_current_thread();
@@ -367,6 +373,7 @@ ACPI_STATUS AcpiOsExecute(
         free(ctx);
         mutex_acquire(&os_execute_lock);
         os_execute_tasks--;
+        cond_broadcast(&os_execute_cond);
         mutex_release(&os_execute_lock);
         return AE_NO_MEMORY;
     }

@@ -7,6 +7,7 @@
 #include <ddk/driver.h>
 #include <ddk/io-alloc.h>
 #include <ddk/protocol/pci.h>
+#include <ddk/protocol/usb-bus.h>
 #include <ddk/protocol/usb-hci.h>
 
 #include <hw/reg.h>
@@ -29,8 +30,8 @@ typedef struct usb_xhci {
     // the device we implement
     mx_device_t device;
 
-    // USB devices we created
-    mx_device_t* devices[MAX_SLOTS];
+    mx_device_t* bus_device;
+    usb_bus_protocol_t* bus_protocol;
 
     io_alloc_t* io_alloc;
     pci_protocol_t* pci_proto;
@@ -43,26 +44,31 @@ typedef struct usb_xhci {
 #define xhci_to_usb_xhci(dev) containerof(dev, usb_xhci_t, xhci)
 #define dev_to_usb_xhci(dev) containerof(dev, usb_xhci_t, device)
 
-mx_status_t xhci_add_device(xhci_t* xhci, int slot_id, int speed,
+mx_status_t xhci_add_device(xhci_t* xhci, int slot_id, int hub_address, int speed,
                             usb_device_descriptor_t* device_descriptor,
                             usb_configuration_descriptor_t** config_descriptors) {
     usb_xhci_t* uxhci = xhci_to_usb_xhci(xhci);
     xprintf("xhci_add_new_device\n");
 
-    mx_status_t result = usb_add_device(&uxhci->device, slot_id, speed,
-                                        device_descriptor, config_descriptors,
-                                        &uxhci->devices[slot_id - 1]);
-    return result;
+    if (!uxhci->bus_device || !uxhci->bus_protocol) {
+        printf("no bus device in xhci_add_device\n");
+        return ERR_INTERNAL;
+    }
+
+    return uxhci->bus_protocol->add_device(uxhci->bus_device, slot_id, hub_address, speed,
+                                           device_descriptor, config_descriptors);
 }
 
 void xhci_remove_device(xhci_t* xhci, int slot_id) {
     usb_xhci_t* uxhci = xhci_to_usb_xhci(xhci);
     xprintf("xhci_remove_device %d\n", slot_id);
-    int index = slot_id - 1;
-    if (uxhci->devices[index]) {
-        device_remove(uxhci->devices[index]);
-        uxhci->devices[index] = NULL;
+
+    if (!uxhci->bus_device || !uxhci->bus_protocol) {
+        printf("no bus device in xhci_remove_device\n");
+        return;
     }
+
+    uxhci->bus_protocol->remove_device(uxhci->bus_device, slot_id);
 }
 
 void* xhci_malloc(xhci_t* xhci, size_t size) {
@@ -118,65 +124,14 @@ static int xhci_irq_thread(void* arg) {
     return 0;
 }
 
-static void xhci_transfer_callback(mx_status_t result, void* data) {
-    usb_request_t* request = (usb_request_t*)data;
-    if (result > 0) {
-        request->transfer_length = result;
-        request->status = NO_ERROR;
+void xhci_set_bus_device(mx_device_t* device, mx_device_t* busdev) {
+    usb_xhci_t* uxhci = dev_to_usb_xhci(device);
+    uxhci->bus_device = busdev;
+    if (busdev) {
+        device_get_protocol(busdev, MX_PROTOCOL_USB_BUS, (void**)&uxhci->bus_protocol);
     } else {
-        request->transfer_length = 0;
-        request->status = result;
+        uxhci->bus_protocol = NULL;
     }
-    request->complete_cb(request);
-}
-
-usb_request_t* xhci_alloc_request(mx_device_t* device, uint16_t length) {
-    usb_xhci_t* uxhci = dev_to_usb_xhci(device);
-    usb_request_t* request = calloc(1, sizeof(usb_request_t));
-    if (!request)
-        return NULL;
-
-    xhci_transfer_context_t* context = malloc(sizeof(xhci_transfer_context_t));
-    if (!context) {
-        free(request);
-        return NULL;
-    }
-    context->callback = xhci_transfer_callback;
-    context->data = request;
-    request->driver_data = context;
-
-    // buffers need not be aligned, but 64 byte alignment gives better performance
-    request->buffer = (uint8_t*)xhci_memalign(&uxhci->xhci, 64, length);
-    if (!request->buffer) {
-        free(request->driver_data);
-        free(request);
-        return NULL;
-    }
-    request->buffer_length = length;
-    return request;
-}
-
-void xhci_free_request(mx_device_t* device, usb_request_t* request) {
-    usb_xhci_t* uxhci = dev_to_usb_xhci(device);
-    if (request) {
-        if (request->buffer) {
-            xhci_free(&uxhci->xhci, request->buffer);
-        }
-        free(request->driver_data);
-        free(request);
-    }
-}
-
-int xhci_queue_request(mx_device_t* hci_device, int devaddr, usb_request_t* request) {
-    usb_xhci_t* uxhci = dev_to_usb_xhci(hci_device);
-    xhci_t* xhci = &uxhci->xhci;
-    usb_endpoint_descriptor_t* ep = request->endpoint->descriptor;
-    mx_paddr_t phys_addr = xhci_virt_to_phys(xhci, (mx_vaddr_t)request->buffer);
-
-    return xhci_queue_transfer(xhci, devaddr, NULL, phys_addr, request->transfer_length,
-                               xhci_endpoint_index(ep->bEndpointAddress),
-                               ep->bEndpointAddress & USB_ENDPOINT_DIR_MASK,
-                               (xhci_transfer_context_t*)request->driver_data);
 }
 
 mx_status_t xhci_config_hub(mx_device_t* hci_device, int slot_id, usb_speed_t speed,
@@ -185,22 +140,20 @@ mx_status_t xhci_config_hub(mx_device_t* hci_device, int slot_id, usb_speed_t sp
     return xhci_configure_hub(&uxhci->xhci, slot_id, speed, descriptor);
 }
 
-mx_status_t xhci_hub_device_added(mx_device_t* hci_device, int hub_address, int port,
+mx_status_t xhci_hub_device_added(mx_device_t* hci_device, uint32_t hub_address, int port,
                                   usb_speed_t speed) {
     usb_xhci_t* uxhci = dev_to_usb_xhci(hci_device);
     return xhci_enumerate_device(&uxhci->xhci, hub_address, port, speed);
 }
 
-mx_status_t xhci_hub_device_removed(mx_device_t* hci_device, int hub_address, int port) {
+mx_status_t xhci_hub_device_removed(mx_device_t* hci_device, uint32_t hub_address, int port) {
     usb_xhci_t* uxhci = dev_to_usb_xhci(hci_device);
     xhci_device_disconnected(&uxhci->xhci, hub_address, port);
     return NO_ERROR;
 }
 
 usb_hci_protocol_t xhci_hci_protocol = {
-    .alloc_request = xhci_alloc_request,
-    .free_request = xhci_free_request,
-    .queue_request = xhci_queue_request,
+    .set_bus_device = xhci_set_bus_device,
     .configure_hub = xhci_config_hub,
     .hub_device_added = xhci_hub_device_added,
     .hub_device_removed = xhci_hub_device_removed,
@@ -257,6 +210,15 @@ static void xhci_iotxn_queue(mx_device_t* hci_device, iotxn_t* txn) {
     }
 }
 
+static void xhci_unbind(mx_device_t* dev) {
+    xprintf("usb_xhci_unbind\n");
+    usb_xhci_t* uxhci = dev_to_usb_xhci(dev);
+
+    if (uxhci->bus_device) {
+        device_remove(uxhci->bus_device);
+    }
+}
+
 static mx_status_t xhci_release(mx_device_t* device) {
     // FIXME - do something here
     return NO_ERROR;
@@ -264,6 +226,7 @@ static mx_status_t xhci_release(mx_device_t* device) {
 
 static mx_protocol_device_t xhci_device_proto = {
     .iotxn_queue = xhci_iotxn_queue,
+    .unbind = xhci_unbind,
     .release = xhci_release,
 };
 
@@ -375,9 +338,7 @@ static mx_status_t usb_xhci_bind(mx_driver_t* drv, mx_device_t* dev) {
     uxhci->cfg_handle = cfg_handle;
     uxhci->pci_proto = pci_proto;
 
-    status = device_init(&uxhci->device, drv, "usb-xhci", &xhci_device_proto);
-    if (status < 0)
-        goto error_return;
+    device_init(&uxhci->device, drv, "usb-xhci", &xhci_device_proto);
 
     status = xhci_init(&uxhci->xhci, mmio);
     if (status < 0)
@@ -407,18 +368,6 @@ error_return:
     return status;
 }
 
-static mx_status_t usb_xhci_unbind(mx_driver_t* drv, mx_device_t* dev) {
-    xprintf("usb_xhci_unbind\n");
-    usb_xhci_t* uxhci = dev_to_usb_xhci(dev);
-
-    for (int i = 0; i < MAX_SLOTS; i++) {
-        if (uxhci->devices[i]) {
-            device_remove(uxhci->devices[i]);
-        }
-    }
-    return NO_ERROR;
-}
-
 static mx_bind_inst_t binding[] = {
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_PCI),
     BI_ABORT_IF(NE, BIND_PCI_CLASS, 0x0C),
@@ -430,7 +379,6 @@ mx_driver_t _driver_usb_xhci BUILTIN_DRIVER = {
     .name = "usb-xhci",
     .ops = {
         .bind = usb_xhci_bind,
-        .unbind = usb_xhci_unbind,
     },
     .binding = binding,
     .binding_size = sizeof(binding),

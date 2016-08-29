@@ -11,11 +11,12 @@ MODULE_TYPE := userlib
 MODULE_SRCS += \
     $(LOCAL_DIR)/all-tests.c \
     $(LOCAL_DIR)/unittest.c \
-    $(LOCAL_DIR)/hexdump.c
 
 MODULE_SO_NAME := unittest
 
 # N.B. mxio, and thus launchpad, cannot appear here. See ./README.md.
 MODULE_LIBS := ulib/musl
+
+MODULE_STATIC_LIBS := ulib/hexdump
 
 include make/module.mk

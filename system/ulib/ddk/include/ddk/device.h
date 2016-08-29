@@ -7,7 +7,7 @@
 #include <magenta/syscalls.h>
 #include <magenta/types.h>
 #include <ddk/iotxn.h>
-#include <system/listnode.h>
+#include <magenta/listnode.h>
 
 // for ssize_t:
 #include <unistd.h>
@@ -23,7 +23,6 @@ typedef struct vnode vnode_t;
 //TODO: multi-char constants are implementation-specific
 //      move to something more ABI-stable
 
-#define MX_DEVICE_MAGIC 'MDEV'
 #define MX_DEVICE_NAME_MAX 32
 
 struct mx_device {
@@ -95,6 +94,9 @@ typedef struct mx_protocol_device {
     // but added with device_add_instance() instead of device_add().
 
     mx_status_t (*close)(mx_device_t* dev);
+
+    void (*unbind)(mx_device_t* dev);
+    // Notifies the device that its parent is being removed (has been hot unplugged, etc).
 
     mx_status_t (*release)(mx_device_t* dev);
     // Release any resources held by the mx_device_t and free() it.

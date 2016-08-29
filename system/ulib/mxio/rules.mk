@@ -20,11 +20,11 @@ MODULE_SRCS += \
     $(LOCAL_DIR)/startup-handles.c \
     $(LOCAL_DIR)/stubs.c \
     $(LOCAL_DIR)/loader-service.c \
+    $(LOCAL_DIR)/watcher.c \
 
 MODULE_EXPORT := mxio
 
 MODULE_SO_NAME := mxio
-MODULE_STATIC_LIBS := ulib/ddk
 MODULE_LIBS := ulib/magenta ulib/musl
 
 include make/module.mk

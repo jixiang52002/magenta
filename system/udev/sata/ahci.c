@@ -6,13 +6,13 @@
 #include <ddk/device.h>
 #include <ddk/driver.h>
 #include <ddk/binding.h>
-#include <ddk/hexdump.h>
 #include <ddk/protocol/pci.h>
 
+#include <hexdump/hexdump.h>
 #include <magenta/syscalls.h>
 #include <magenta/syscalls-ddk.h>
 #include <magenta/types.h>
-#include <system/listnode.h>
+#include <magenta/listnode.h>
 #include <sys/param.h>
 #include <assert.h>
 #include <stdlib.h>
@@ -587,11 +587,7 @@ static mx_status_t ahci_bind(mx_driver_t* drv, mx_device_t* dev) {
         return ERR_NO_MEMORY;
     }
 
-    status = device_init(&device->device, drv, "ahci", &ahci_device_proto);
-    if (status) {
-        xprintf("ahci: failed to init device\n");
-        goto fail;
-    }
+    device_init(&device->device, drv, "ahci", &ahci_device_proto);
 
     // map register window
     device->regs_handle = pci->map_mmio(dev, 5, MX_CACHE_POLICY_UNCACHED_DEVICE, (void*)&device->regs, &device->regs_size);

@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <system/listnode.h>
+#include <magenta/listnode.h>
 
 #include <ddk/device.h>
 
@@ -240,6 +240,7 @@ static mnode_t mem_root = {
         .pdata = &mem_root,
         .dnode = &mem_root_dn,
         .dn_list = LIST_INITIAL_VALUE(mem_root.vn.dn_list),
+        .watch_list = LIST_INITIAL_VALUE(mem_root.vn.watch_list),
     },
 };
 
@@ -260,6 +261,7 @@ static mx_status_t _mem_create(mnode_t* parent, mnode_t** out,
     mem->vn.ops = &vn_mem_ops;
     mem->vn.pdata = mem;
     list_initialize(&mem->vn.dn_list);
+    list_initialize(&mem->vn.watch_list);
 
     mx_status_t r;
     dnode_t* dn;
@@ -304,6 +306,7 @@ static mnode_t vfs_root = {
         .pdata = &vfs_root,
         .dnode = &vfs_root_dn,
         .dn_list = LIST_INITIAL_VALUE(vfs_root.vn.dn_list),
+        .watch_list = LIST_INITIAL_VALUE(vfs_root.vn.watch_list),
     },
 };
 
@@ -321,12 +324,14 @@ vnode_t* vfs_get_root(void) {
     return &vfs_root.vn;
 }
 
-static vfs_t vfs_data;
-
-// UNSAFE! LOCK!
 mx_status_t vfs_install_remote(mx_handle_t h) {
-    vfs_data.remote = h;
-    vn_data->vn.vfs = &vfs_data;
+    mtx_lock(&vfs_lock);
+    if (vn_data->vn.remote > 0) {
+        mx_handle_close(vn_data->vn.remote);
+    }
+    printf("INSTALL %u\n", h);
+    vn_data->vn.remote = h;
     vn_data->vn.flags |= V_FLAG_REMOTE;
+    mtx_unlock(&vfs_lock);
     return NO_ERROR;
 }

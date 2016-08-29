@@ -103,9 +103,6 @@ USER_CFLAGS :=
 USER_CPPFLAGS :=
 USER_ASMFLAGS :=
 
-# Additional flags for statically linking executables.
-USERAPP_LDFLAGS = -T $(USER_LINKER_SCRIPT)
-
 # Additional flags for dynamic linking, both for dynamically-linked
 # executables and for shared libraries.
 USER_DYNAMIC_LDFLAGS := \
@@ -124,7 +121,7 @@ USERLIB_SO_LDFLAGS := $(USER_DYNAMIC_LDFLAGS) -z defs
 USER_SHARED_INTERP := ld.so.1
 
 # Additional flags for building dynamically-linked executables.
-USERAPP_SHARED_LDFLAGS := \
+USERAPP_LDFLAGS := \
     $(USER_DYNAMIC_LDFLAGS) -pie -dynamic-linker $(USER_SHARED_INTERP)
 
 ifeq ($(call TOBOOL,$(USE_GOLD)),false)
@@ -137,7 +134,7 @@ ifeq ($(call TOBOOL,$(USE_GOLD)),false)
 # to generate -rpath-link in a general fashion.  Eventually we should
 # always use gold or lld for all the user-mode links, and then we'll
 # never need this.
-USERAPP_SHARED_LDFLAGS += -rpath-link $(BUILDDIR)/ulib/magenta
+USERAPP_LDFLAGS += -rpath-link $(BUILDDIR)/ulib/magenta
 endif
 
 # Architecture specific compile flags
@@ -260,11 +257,19 @@ include top/rules.mk
 # modules in the ALLMODULES list
 include make/recurse.mk
 
+# host tools
+include system/tools/build.mk
+
 ifeq ($(call TOBOOL,$(ENABLE_BUILD_SYSROOT)),true)
-# copy global headers to the sysroot
-$(call copy-dst-src,$(BUILDDIR)/sysroot/include/global/fuchsia-types.h,$(LKMAKEROOT)/global/include/global/fuchsia-types.h)
-SYSROOT_DEPS += $(BUILDDIR)/sysroot/include/global/fuchsia-types.h
-GENERATED += $(BUILDDIR)/sysroot/include/global/fuchsia-types.h
+# identify global headers to copy to the sysroot
+GLOBAL_HEADERS := $(shell find global/include -name \*\.h)
+GLOBAL_HEADERS := $(patsubst global/include/%,$(BUILDDIR)/sysroot/include/%,$(GLOBAL_HEADERS))
+
+# generate rule to copy them
+$(call copy-dst-src,$(BUILDDIR)/sysroot/include/%.h,global/include/%.h)
+
+SYSROOT_DEPS += $(GLOBAL_HEADERS)
+GENERATED += $(GLOBAL_HEADERS)
 
 # copy crt*.o files to the sysroot
 # crt1.o is temporary as we'll stop supporting fully static linking
@@ -313,7 +318,7 @@ KERNEL_DEFINES += \
 
 # debug build?
 ifneq ($(DEBUG),)
-KERNEL_DEFINES += \
+GLOBAL_DEFINES += \
 	LK_DEBUGLEVEL=$(DEBUG)
 endif
 
