@@ -229,7 +229,6 @@ static vnode_ops_t vn_mem_ops_dir = {
 static dnode_t mem_root_dn = {
     .name = "tmp",
     .flags = 3,
-    .refcount = 1,
     .children = LIST_INITIAL_VALUE(mem_root_dn.children),
 };
 
@@ -294,7 +293,6 @@ vnode_t* memfs_get_root(void) {
 static dnode_t vfs_root_dn = {
     .name = "<root>",
     .flags = 6,
-    .refcount = 1,
     .children = LIST_INITIAL_VALUE(vfs_root_dn.children),
     .parent = &vfs_root_dn,
 };
@@ -329,7 +327,6 @@ mx_status_t vfs_install_remote(mx_handle_t h) {
     if (vn_data->vn.remote > 0) {
         mx_handle_close(vn_data->vn.remote);
     }
-    printf("INSTALL %u\n", h);
     vn_data->vn.remote = h;
     vn_data->vn.flags |= V_FLAG_REMOTE;
     mtx_unlock(&vfs_lock);

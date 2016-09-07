@@ -27,7 +27,7 @@
 
 static mx_status_t devhost_rpc(mx_handle_t h, devhost_msg_t* msg, mx_handle_t harg) {
     mx_status_t r;
-    if ((r = mx_message_write(h, msg, sizeof(*msg), &harg, harg ? 1 : 0, 0)) < 0) {
+    if ((r = mx_msgpipe_write(h, msg, sizeof(*msg), &harg, harg ? 1 : 0, 0)) < 0) {
         return r;
     }
     mx_signals_state_t pending;
@@ -36,10 +36,10 @@ static mx_status_t devhost_rpc(mx_handle_t h, devhost_msg_t* msg, mx_handle_t ha
         return r;
     }
     if (pending.satisfied & MX_SIGNAL_PEER_CLOSED) {
-        return ERR_CHANNEL_CLOSED;
+        return ERR_REMOTE_CLOSED;
     }
     uint32_t dsz = sizeof(*msg);
-    if ((r = mx_message_read(h, msg, &dsz, NULL, NULL, 0)) < 0) {
+    if ((r = mx_msgpipe_read(h, msg, &dsz, NULL, NULL, 0)) < 0) {
         return r;
     }
     if ((dsz != sizeof(*msg)) || (msg->op != DH_OP_STATUS)) {
@@ -55,7 +55,7 @@ mx_status_t devhost_add(mx_device_t* dev, mx_device_t* parent) {
     }
     mx_handle_t h[2];
     mx_status_t r;
-    if ((r = mx_message_pipe_create(h, 0)) < 0) {
+    if ((r = mx_msgpipe_create(h, 0)) < 0) {
         free(ios);
         return r;
     }
@@ -65,7 +65,7 @@ mx_status_t devhost_add(mx_device_t* dev, mx_device_t* parent) {
     msg.arg = 0;
     msg.device_id = parent->remote_id;
     msg.protocol_id = dev->protocol_id;
-    memcpy(msg.namedata, dev->namedata, sizeof(dev->namedata));
+    memcpy(msg.namedata, dev->name, sizeof(dev->name));
     r = devhost_rpc(devhost_handle, &msg, h[1]);
     //printf("devhost_add() %d\n", r);
     if (r == NO_ERROR) {

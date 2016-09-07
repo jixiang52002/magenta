@@ -18,7 +18,6 @@
 
 #include <magenta/processargs.h>
 #include <magenta/syscalls.h>
-#include <magenta/syscalls-ddk.h>
 
 #include <mxio/debug.h>
 #include <mxio/io.h>
@@ -313,12 +312,13 @@ void joinproc(mx_handle_t p) {
     }
 
     // read the return code
-    mx_process_info_t proc_info;
-    mx_ssize_t ret = mx_handle_get_info(p, MX_INFO_PROCESS, &proc_info, sizeof(proc_info));
+    mx_info_process_t proc_info;
+    mx_ssize_t ret = mx_object_get_info(p, MX_INFO_PROCESS, sizeof(proc_info.rec),
+            &proc_info, sizeof(proc_info));
     if (ret != sizeof(proc_info)) {
-        fprintf(stderr, "[process(%x): handle_get_info failed? %ld]\n", p, ret);
+        fprintf(stderr, "[process(%x): object_get_info failed? %ld]\n", p, ret);
     } else {
-        fprintf(stderr, "[process(%x): status: %d]\n", p, proc_info.return_code);
+        fprintf(stderr, "[process(%x): status: %d]\n", p, proc_info.rec.return_code);
     }
 
     settitle("mxsh");
@@ -481,6 +481,27 @@ done_no_lp:
     return status;
 }
 
+static void send_debug_command(const char* cmd) {
+    const char* prefix = "kerneldebug ";
+    char buf[256];
+    size_t len = strlen(prefix) + strlen(cmd) + 1;
+    if (len > sizeof(buf)) {
+        return;
+    }
+
+    int fd = open("/dev/dmctl", O_WRONLY);
+    if (fd < 0) {
+        return;
+    }
+
+    strcpy(buf, prefix);
+    strncpy(buf + strlen(prefix), cmd, len - strlen(prefix));
+    buf[len - 1] = '\0';
+
+    write(fd, buf, len);
+    close(fd);
+}
+
 void execline(char* line) {
     bool runbg;
     char* argv[32];
@@ -488,7 +509,7 @@ void execline(char* line) {
     int len;
 
     if (line[0] == '`') {
-        mx_debug_send_command(line + 1, strlen(line) - 1);
+        send_debug_command(line + 1);
         return;
     }
     len = strlen(line);

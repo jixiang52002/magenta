@@ -26,6 +26,7 @@
 #include <magenta/magenta.h>
 #include <magenta/thread_dispatcher.h>
 #include <magenta/user_copy.h>
+#include <magenta/vm_object_dispatcher.h>
 
 #define LOCAL_TRACE 0
 
@@ -122,8 +123,9 @@ status_t ProcessDispatcher::Initialize() {
     return NO_ERROR;
 }
 
-status_t ProcessDispatcher::Start(ThreadDispatcher *thread, uintptr_t pc,
-                                  uintptr_t sp, uintptr_t arg1, uintptr_t arg2) {
+status_t ProcessDispatcher::Start(mxtl::RefPtr<ThreadDispatcher> thread,
+                                  uintptr_t pc, uintptr_t sp,
+                                  uintptr_t arg1, uintptr_t arg2) {
     LTRACEF("process %p thread %p, entry %#" PRIxPTR ", sp %#" PRIxPTR
             ", arg1 %#" PRIxPTR ", arg2 %#" PRIxPTR "\n",
             this, thread, pc, sp, arg1, arg2);
@@ -199,6 +201,11 @@ void ProcessDispatcher::KillAllThreads() {
         LTRACEF("killing thread %p\n", &thread);
         thread.Kill();
     };
+
+    // Unblock any futexes.
+    // This is issued after all threads are marked as DYING so there
+    // is no chance of a thread calling FutexWait.
+    futex_context_.WakeAll();
 }
 
 status_t ProcessDispatcher::AddThread(UserThread* t) {
@@ -244,8 +251,17 @@ void ProcessDispatcher::RemoveThread(UserThread* t) {
 
 void ProcessDispatcher::AllHandlesClosed() {
     LTRACE_ENTRY_OBJ;
-    // Here we should call Kill(). Currently not advisable since launchpad launcher
-    // closes the handle to each launched process.
+
+    // check that we're not already entering a dead state
+    // note this is checked outside of a mutex to avoid a reentrant case where the
+    // process is already being destroyed, the handle table is being cleaned up, and
+    // the last ref to itself is being dropped. In that case it recurses into this function
+    // and would wedge up if Kill() is called
+    if (state_ == State::DYING || state_ == State::DEAD)
+        return;
+
+    // last handle going away acts as a kill to the process object
+    Kill();
 }
 
 void ProcessDispatcher::SetState(State s) {
@@ -350,7 +366,7 @@ bool ProcessDispatcher::GetDispatcher(mx_handle_t handle_value,
     return true;
 }
 
-status_t ProcessDispatcher::GetInfo(mx_process_info_t* info) {
+status_t ProcessDispatcher::GetInfo(mx_record_process_t* info) {
     info->return_code = retcode_;
 
     return NO_ERROR;
@@ -359,7 +375,7 @@ status_t ProcessDispatcher::GetInfo(mx_process_info_t* info) {
 status_t ProcessDispatcher::CreateUserThread(mxtl::StringPiece name, uint32_t flags, mxtl::RefPtr<UserThread>* user_thread) {
     AllocChecker ac;
     auto ut = mxtl::AdoptRef(new (&ac) UserThread(GenerateKernelObjectId(),
-                                                   mxtl::RefPtr<ProcessDispatcher>(this),
+                                                   mxtl::WrapRefPtr(this),
                                                    flags));
     if (!ac.check())
         return ERR_NO_MEMORY;
@@ -419,7 +435,7 @@ mxtl::RefPtr<ProcessDispatcher> ProcessDispatcher::LookupProcessById(mx_koid_t k
     auto iter = global_process_list_.find_if([koid](const ProcessDispatcher& p) {
                                                 return p.get_koid() == koid;
                                              });
-    return mxtl::RefPtr<ProcessDispatcher>(iter.CopyPointer());
+    return mxtl::WrapRefPtr(iter.CopyPointer());
 }
 
 mxtl::RefPtr<UserThread> ProcessDispatcher::LookupThreadById(mx_koid_t koid) {
@@ -427,7 +443,7 @@ mxtl::RefPtr<UserThread> ProcessDispatcher::LookupThreadById(mx_koid_t koid) {
     AutoLock lock(&thread_list_lock_);
 
     auto iter = thread_list_.find_if([koid](const UserThread& t) { return t.get_koid() == koid; });
-    return mxtl::RefPtr<UserThread>(iter.CopyPointer());
+    return mxtl::WrapRefPtr(iter.CopyPointer());
 }
 
 mx_status_t ProcessDispatcher::set_bad_handle_policy(uint32_t new_policy) {
@@ -449,4 +465,42 @@ const char* StateToString(ProcessDispatcher::State state) {
         return "dead";
     }
     return "unknown";
+}
+
+mx_status_t ProcessDispatcher::Map(
+    mxtl::RefPtr<VmObjectDispatcher> vmo, uint32_t vmo_rights,
+    uint64_t offset, mx_size_t len, uintptr_t* address, uint32_t flags) {
+    mx_status_t status;
+
+    status = vmo->Map(aspace(), vmo_rights, offset, len, address, flags);
+
+    return status;
+}
+
+mx_status_t ProcessDispatcher::Unmap(uintptr_t address, mx_size_t len) {
+    mx_status_t status;
+
+    // TODO: support range unmapping
+    // at the moment only support unmapping what is at a given address, signalled with len = 0
+    if (len != 0)
+        return ERR_INVALID_ARGS;
+
+    status = aspace_->FreeRegion(address);
+
+    return status;
+}
+
+mx_status_t ProcessDispatcher::BadHandle(mx_handle_t handle_value,
+                                         mx_status_t error) {
+    // TODO(mcgrathr): Maybe treat other errors the same?
+    // This also gets ERR_WRONG_TYPE and ERR_ACCESS_DENIED (for rights checks).
+    if (error != ERR_BAD_HANDLE)
+        return error;
+
+    // TODO(cpu): Generate an exception when exception handling lands.
+    if (get_bad_handle_policy() == MX_POLICY_BAD_HANDLE_EXIT) {
+        printf("\n[fatal: %s used a bad handle]\n", name().data());
+        Exit(error);
+    }
+    return error;
 }

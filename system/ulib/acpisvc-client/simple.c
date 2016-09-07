@@ -34,7 +34,7 @@ static mx_status_t wait_for_message(
 
     uint32_t rsp_len = 0;
     uint32_t num_handles_returned = 0;
-    status = mx_message_read(h, NULL, &rsp_len, NULL, &num_handles_returned, 0);
+    status = mx_msgpipe_read(h, NULL, &rsp_len, NULL, &num_handles_returned, 0);
     if (status != ERR_NOT_ENOUGH_BUFFER) {
         return status;
     }
@@ -51,7 +51,7 @@ static mx_status_t wait_for_message(
     }
 
     mx_handle_t handles_returned[MAX_RETURNED_HANDLES];
-    status = mx_message_read(h, rsp, &rsp_len, handles_returned, &num_handles_returned, 0);
+    status = mx_msgpipe_read(h, rsp, &rsp_len, handles_returned, &num_handles_returned, 0);
     if (status != NO_ERROR) {
         free(rsp);
         return status;
@@ -109,7 +109,7 @@ static mx_status_t run_txn(
     acpi_cmd_hdr_t* cmd_hdr = cmd;
     cmd_hdr->request_id = req_id;
 
-    mx_status_t status = mx_message_write(h->pipe, cmd, cmd_len, NULL, 0, 0);
+    mx_status_t status = mx_msgpipe_write(h->pipe, cmd, cmd_len, NULL, 0, 0);
     if (status != NO_ERROR) {
         goto exit;
     }
@@ -231,4 +231,26 @@ mx_status_t acpi_get_pci_init_arg(acpi_handle_t* h,
     *response = rsp;
     *len = rsp_len;
     return NO_ERROR;
+}
+
+mx_status_t acpi_s_state_transition(acpi_handle_t* h, uint8_t target_state) {
+    acpi_cmd_s_state_transition_t cmd = {
+        .hdr = {
+            .version = 0,
+            .cmd = ACPI_CMD_S_STATE_TRANSITION,
+            .len = sizeof(cmd),
+        },
+        .target_state = target_state,
+    };
+
+    acpi_rsp_s_state_transition_t* rsp;
+    size_t rsp_len;
+    mx_status_t status =
+        run_txn(h, &cmd, sizeof(cmd), (void**)&rsp, &rsp_len, NULL, 0);
+    if (status != NO_ERROR) {
+        return status;
+    }
+
+    // This state should be unreachable.
+    abort();
 }

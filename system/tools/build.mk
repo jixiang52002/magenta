@@ -9,23 +9,26 @@ BOOTSERVER := $(BUILDDIR)/tools/bootserver
 LOGLISTENER := $(BUILDDIR)/tools/loglistener
 NETRUNCMD := $(BUILDDIR)/tools/netruncmd
 NETCP:= $(BUILDDIR)/tools/netcp
+KTRACEDUMP:= $(BUILDDIR)/tools/ktracedump
 
-ALL_TOOLS := $(MKBOOTFS) $(BOOTSERVER) $(LOGLISTENER) $(NETRUNCMD) $(NETCP)
+TOOLS_CFLAGS := -std=c11 -Wall -Isystem/public -Isystem/private
+
+ALL_TOOLS := $(MKBOOTFS) $(BOOTSERVER) $(LOGLISTENER) $(NETRUNCMD) $(NETCP) $(KTRACEDUMP)
 
 $(BUILDDIR)/tools/%: system/tools/%.c
 	@echo compiling $@
 	@$(MKDIR)
-	$(NOECHO)cc -std=c99 -Wall -I global/include -o $@ $<
+	$(NOECHO)cc $(TOOLS_CFLAGS) -o $@ $<
 
 $(BUILDDIR)/tools/netruncmd: system/tools/netruncmd.c system/tools/netprotocol.c
 	@echo compiling $@
 	@$(MKDIR)
-	$(NOECHO)cc -std=c99 -Wall -I global/include -o $@ $^
+	$(NOECHO)cc $(TOOLS_CFLAGS) -o $@ $^
 
 $(BUILDDIR)/tools/netcp: system/tools/netcp.c system/tools/netprotocol.c
 	@echo compiling $@
 	@$(MKDIR)
-	$(NOECHO)cc -std=c99 -Wall -I global/include -o $@ $^
+	$(NOECHO)cc $(TOOLS_CFLAGS) -o $@ $^
 
 GENERATED += $(ALL_TOOLS)
 EXTRA_BUILDDEPS += $(ALL_TOOLS)

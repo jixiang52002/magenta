@@ -4,8 +4,8 @@
 
 #include <assert.h>
 #include <ddk/io-alloc.h>
+#include <ddk/driver.h>
 #include <magenta/syscalls.h>
-#include <magenta/syscalls-ddk.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,7 +45,7 @@ io_alloc_t* io_alloc_init(size_t size) {
 
     mx_paddr_t phys;
     void* virt;
-    mx_status_t status = mx_alloc_device_memory(size, &phys, &virt);
+    mx_status_t status = mx_alloc_device_memory(get_root_resource(), size, &phys, &virt);
     if (status) {
         printf("mx_alloc_device_memory failed %d\n", status);
         free(ioa);

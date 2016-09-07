@@ -7,7 +7,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <magenta/syscalls.h>
-#include <magenta/syscalls-ddk.h>
 #include "tpm.h"
 
 #define TPM_LOCALITY_BASE(locality) ((uintptr_t)(tpm_base) + ((uintptr_t)(locality) << 12))
@@ -197,7 +196,7 @@ static mx_status_t get_status_data_avail(enum locality loc, bool* data_avail) {
 
 static mx_status_t wait_for_data_avail(enum locality loc) {
     // TODO(teisenbe): Add a timeout to this?  We need support for timeouts
-    // on the mx_interrupt_event_wait call below first.
+    // on the mx_interrupt_wait call below first.
     while (1) {
         bool data_avail = false;
         mx_status_t st = get_status_data_avail(loc, &data_avail);
@@ -208,7 +207,7 @@ static mx_status_t wait_for_data_avail(enum locality loc) {
             return NO_ERROR;
         }
 
-        st = mx_interrupt_event_wait(irq_handle);
+        st = mx_interrupt_wait(irq_handle);
         if (st < 0) {
             return st;
         }
@@ -220,10 +219,10 @@ static mx_status_t wait_for_data_avail(enum locality loc) {
             *TPM_INT_STATUS(loc) = IRQ_LOCALITY_CHANGE;
             // If locality changed, whatever operation we're in the middle of
             // is no longer valid..
-            mx_interrupt_event_complete(irq_handle);
+            mx_interrupt_complete(irq_handle);
             return ERR_CANCELLED;
         }
-        mx_interrupt_event_complete(irq_handle);
+        mx_interrupt_complete(irq_handle);
     }
 }
 

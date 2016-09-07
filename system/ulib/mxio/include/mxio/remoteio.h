@@ -4,10 +4,10 @@
 
 #pragma once
 
+#include <magenta/compiler.h>
 #include <magenta/types.h>
 #include <mxio/io.h>
 #include <stdint.h>
-#include <magenta/compiler.h>
 
 __BEGIN_CDECLS
 
@@ -29,7 +29,9 @@ __BEGIN_CDECLS
 #define MXRIO_READDIR      0x00000009
 #define MXRIO_IOCTL        0x0000000a
 #define MXRIO_UNLINK       0x0000000b
-#define MXRIO_NUM_OPS      12
+#define MXRIO_READ_AT      0x0000000c
+#define MXRIO_WRITE_AT     0x0000000d
+#define MXRIO_NUM_OPS      14
 
 #define MXRIO_OP(n)        ((n) & 0xFFFF)
 #define MXRIO_REPLY_PIPE   0x01000000
@@ -37,7 +39,8 @@ __BEGIN_CDECLS
 #define MXRIO_OPNAMES { \
     "status", "close", "clone", "open", \
     "misc", "read", "write", "seek", \
-    "stat", "readdir", "ioctl", "unlink" }
+    "stat", "readdir", "ioctl", "unlink", \
+    "read_at", "write_at" }
 
 typedef struct mxrio_msg mxrio_msg_t;
 
@@ -90,7 +93,9 @@ struct mxrio_msg {
 // CLONE     0          0       -                objtype     -               handle(s)
 // OPEN      flags      mode    <name>           objtype     -               handle(s)
 // READ      maxread    0       -                newoffset   <bytes>         -
+// READ_AT   maxread    offset  -                0           <bytes>         -
 // WRITE     0          0       <bytes>          newoffset   -               -
+// WRITE_AT  0          offset  <bytes>          0           -               -
 // SEEK      whence     offset  -                offset      -               -
 // STAT      maxreply   0       -                0           <vnattr_t>      -
 // READDIR   maxreply   0       -                0           <vndirent_t[]>  -
@@ -101,8 +106,6 @@ struct mxrio_msg {
 //
 // LSTAT     maxreply   0       -                0           <vnattr_t>      -
 // MKDIR     0          0       <name>           0           -               -
-// READ_AT   maxread    offset  -                newoffset   <bytes>         -
-// WRITE_AT  0          offset  <bytes>          newoffset   -               -
 // RENAME*   name1len   0       <name1><name2>   0           -               -
 // SYMLINK   namelen    0       <name><path>     0           -               -
 // READLINK  maxreply   0       -                0           <path>          -
@@ -114,9 +117,5 @@ struct mxrio_msg {
 // on response arg32 is always mx_status, and may be positive for read/write calls
 // * handle[0] used to pass reference to second directory handle
 // ** handle[0] used to pass reference to target object
-
-// allow for de-featuring this if it proves problematic
-// TODO: make permanent if not
-#define WITH_REPLY_PIPE 1
 
 __END_CDECLS

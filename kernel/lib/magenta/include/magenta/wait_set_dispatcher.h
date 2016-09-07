@@ -17,10 +17,10 @@
 
 #include <sys/types.h>
 
-#include <utils/intrusive_double_list.h>
-#include <utils/intrusive_hash_table.h>
-#include <utils/ref_ptr.h>
-#include <utils/unique_ptr.h>
+#include <mxtl/intrusive_double_list.h>
+#include <mxtl/intrusive_hash_table.h>
+#include <mxtl/ref_ptr.h>
+#include <mxtl/unique_ptr.h>
 
 class WaitSetDispatcher final : public Dispatcher, public StateObserver {
 public:
@@ -121,9 +121,7 @@ public:
     static status_t Create(mxtl::RefPtr<Dispatcher>* dispatcher, mx_rights_t* rights);
 
     ~WaitSetDispatcher() final;
-    mx_obj_type_t GetType() const final { return MX_OBJ_TYPE_WAIT_SET; }
-    WaitSetDispatcher* get_wait_set_dispatcher() final { return this; }
-
+    mx_obj_type_t get_type() const final { return MX_OBJ_TYPE_WAIT_SET; }
     StateTracker* get_state_tracker() final { return &state_tracker_; }
 
     // Adds an entry (previously constructed using Entry::Create()) for the given handle.
@@ -136,7 +134,7 @@ public:
     // Waits on the wait set. Note: This blocks.
     status_t Wait(mx_time_t timeout,
                   uint32_t* num_results,
-                  mx_wait_set_result_t* results,
+                  mx_waitset_result_t* results,
                   uint32_t* max_results);
 
 private:

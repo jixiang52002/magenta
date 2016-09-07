@@ -26,7 +26,7 @@
 #include <mxio/io.h>
 #include <mxio/watcher.h>
 
-#include <magenta/syscalls-ddk.h>
+#include <magenta/syscalls.h>
 
 #define VCDEBUG 1
 
@@ -138,8 +138,13 @@ static int vc_input_thread(void* arg) {
                 // Provide a CTRL-ALT-DEL reboot sequence
                 if ((modifiers & (MOD_LCTRL | MOD_RCTRL)) &&
                     (modifiers & (MOD_LALT | MOD_RALT))) {
-                    // TODO: make this real
-                    mx_debug_send_command("reboot", strlen("reboot"));
+
+                    int fd;
+                    // Send the reboot command to devmgr
+                    if ((fd = open("/dev/dmctl", O_WRONLY)) >= 0) {
+                        write(fd, "reboot", strlen("reboot"));
+                        close(fd);
+                    }
                     consumed = 1;
                 }
                 break;

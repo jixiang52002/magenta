@@ -22,9 +22,9 @@
 #define MAGENTA_SYSCALL_MAGIC 0x00ff00ff00000000
 
 .macro _syscall nargs, name, n
-.globl \name
-.type \name,STT_FUNC
-\name:
+.globl _\name
+.type _\name,STT_FUNC
+_\name:
     .cfi_startproc
     .cfi_same_value %r10
     .cfi_same_value %r11
@@ -48,9 +48,9 @@
     mov      %rcx, %r10
     movabs   $(MAGENTA_SYSCALL_MAGIC | \n), %rax
     syscall
-    pop_reg  %r13
     pop_reg  %r12
     pop_reg  %r11
+    pop_reg  %r10
     ret
 .endif
 .if \nargs == 8
@@ -70,15 +70,13 @@
     ret
 .endif
     .cfi_endproc
-.size \name, . - \name
+.size _\name, . - _\name
+.weak \name
+.type \name,STT_FUNC
+\name = _\name
+.size \name, . - _\name
 .endm
 
-#if LIBDDK
-#define MAGENTA_SYSCALL_DEF(a...)
-#define MAGENTA_DDKCALL_DEF(nargs64, nargs32, n, ret, name, args...) _syscall nargs64, mx_##name, n
-#else
-#define MAGENTA_DDKCALL_DEF(a...)
 #define MAGENTA_SYSCALL_DEF(nargs64, nargs32, n, ret, name, args...) _syscall nargs64, mx_##name, n
-#endif
 
 #include <magenta/syscalls.inc>

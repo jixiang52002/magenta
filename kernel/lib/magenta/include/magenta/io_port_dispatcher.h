@@ -12,7 +12,7 @@
 #include <magenta/dispatcher.h>
 #include <magenta/types.h>
 
-#include <utils/fifo_buffer.h>
+#include <mxtl/fifo_buffer.h>
 #include <sys/types.h>
 
 struct IOP_Packet {
@@ -44,8 +44,7 @@ public:
                            mx_rights_t* rights);
 
     ~IOPortDispatcher() final;
-    mx_obj_type_t GetType() const final { return MX_OBJ_TYPE_IOPORT; }
-    IOPortDispatcher* get_io_port_dispatcher() final { return this; }
+    mx_obj_type_t get_type() const final { return MX_OBJ_TYPE_IOPORT; }
     void on_zero_handles() final;
 
     mx_status_t Queue(IOP_Packet* packet);

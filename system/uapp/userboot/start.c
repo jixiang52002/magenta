@@ -7,12 +7,10 @@
 #include "option.h"
 #include "util.h"
 
-#include "../../ulib/launchpad/stack.h"
-
 #pragma GCC visibility push(hidden)
 
+#include <magenta/stack.h>
 #include <magenta/syscalls.h>
-#include <magenta/syscalls-ddk.h>
 #include <runtime/message.h>
 #include <runtime/processargs.h>
 #include <stdalign.h>
@@ -24,16 +22,17 @@
 
 #define SHUTDOWN_COMMAND "poweroff"
 
-static noreturn void do_shutdown(mx_handle_t log) {
+static noreturn void do_shutdown(mx_handle_t log, mx_handle_t rroot) {
     print(log, "Process exited.  Executing \"", SHUTDOWN_COMMAND, "\".\n",
           NULL);
-    mx_debug_send_command(SHUTDOWN_COMMAND, strlen(SHUTDOWN_COMMAND));
+    mx_debug_send_command(rroot, SHUTDOWN_COMMAND, strlen(SHUTDOWN_COMMAND));
     print(log, "still here after shutdown!\n", NULL);
     while (true)
         __builtin_trap();
 }
 
-static void load_child_process(mx_handle_t log, const struct options* o,
+static void load_child_process(mx_handle_t log, mx_handle_t proc_self,
+                               const struct options* o,
                                mx_handle_t bootfs_vmo, mx_handle_t vdso_vmo,
                                mx_handle_t proc, mx_handle_t to_child,
                                mx_vaddr_t* entry, mx_vaddr_t* vdso_base,
@@ -43,14 +42,14 @@ static void load_child_process(mx_handle_t log, const struct options* o,
     bootfs_mount(log, bootfs_vmo, &bootfs);
 
     // This will handle a PT_INTERP by doing a second lookup in bootfs.
-    *entry = elf_load_bootfs(log, &bootfs, proc, o->value[OPTION_FILENAME],
-                             to_child, stack_size);
+    *entry = elf_load_bootfs(log, proc_self, &bootfs, proc,
+                             o->value[OPTION_FILENAME], to_child, stack_size);
 
     // All done with bootfs!
     bootfs_unmount(log, &bootfs);
 
     // Now load the vDSO into the child, so it has access to system calls.
-    *vdso_base = elf_load_vmo(log, proc, vdso_vmo);
+    *vdso_base = elf_load_vmo(log, proc_self, proc, vdso_vmo);
 }
 
 // This is the main logic:
@@ -64,6 +63,7 @@ static noreturn void bootstrap(mx_handle_t log, mx_handle_t bootstrap_pipe) {
     // Sample the bootstrap message to see how big it is.
     uint32_t nbytes;
     uint32_t nhandles;
+
     mx_status_t status = mxr_message_size(bootstrap_pipe, &nbytes, &nhandles);
     check(log, status, "mxr_message_size failed on bootstrap pipe!\n");
 
@@ -127,10 +127,20 @@ static noreturn void bootstrap(mx_handle_t log, mx_handle_t bootstrap_pipe) {
     if (resource_root == MX_HANDLE_INVALID)
         fail(log, ERR_INVALID_ARGS, "no resource handle in bootstrap message\n");
 
+    // Hang on to our own process handle.  If we closed it, our process
+    // would be killed.  Exiting will clean it up.
+    const mx_handle_t proc_self = *proc_handle_loc;
+
+    // Hang on to the resource root handle.
+    mx_handle_t root_resource_handle =
+        mx_handle_duplicate(resource_root, MX_RIGHT_SAME_RIGHTS);
+    if (root_resource_handle < 0)
+        fail(log, root_resource_handle, "mx_handle_duplicate failed\n");
+
     // Make the message pipe for the bootstrap message.
     mx_handle_t pipeh[2];
-    status = mx_message_pipe_create(pipeh, 0);
-    check(log, status, "mx_message_pipe_create failed\n");
+    status = mx_msgpipe_create(pipeh, 0);
+    check(log, status, "mx_msgpipe_create failed\n");
     mx_handle_t to_child = pipeh[0];
     mx_handle_t child_start_handle = pipeh[1];
 
@@ -140,20 +150,20 @@ static noreturn void bootstrap(mx_handle_t log, mx_handle_t bootstrap_pipe) {
         fail(log, proc, "mx_process_create failed\n");
 
     mx_vaddr_t entry, vdso_base;
-    size_t stack_size = DEFAULT_STACK_SIZE;
-    load_child_process(log, &o, bootfs_vmo, vdso_vmo, proc, to_child,
+    size_t stack_size = MAGENTA_DEFAULT_STACK_SIZE;
+    load_child_process(log, proc_self, &o, bootfs_vmo, vdso_vmo, proc, to_child,
                        &entry, &vdso_base, &stack_size);
 
     // Allocate the stack for the child.
     stack_size = (stack_size + PAGE_SIZE - 1) & -PAGE_SIZE;
-    mx_handle_t stack_vmo = mx_vm_object_create(stack_size);
+    mx_handle_t stack_vmo = mx_vmo_create(stack_size);
     if (stack_vmo < 0)
-        fail(log, stack_vmo, "mx_vm_object_create failed for child stack\n");
+        fail(log, stack_vmo, "mx_vmo_create failed for child stack\n");
     mx_vaddr_t stack_base;
-    status = mx_process_vm_map(proc, stack_vmo, 0, stack_size, &stack_base,
+    status = mx_process_map_vm(proc, stack_vmo, 0, stack_size, &stack_base,
                                MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE);
-    check(log, status, "mx_process_vm_map failed for child stack\n");
-    uintptr_t sp = sp_from_mapping(stack_base, stack_size);
+    check(log, status, "mx_process_map_vm failed for child stack\n");
+    uintptr_t sp = compute_initial_stack_pointer(stack_base, stack_size);
     if (stack_vmo_handle_loc != NULL) {
         // This is our own stack VMO handle, but we don't need it for anything.
         if (*stack_vmo_handle_loc != MX_HANDLE_INVALID)
@@ -163,24 +173,20 @@ static noreturn void bootstrap(mx_handle_t log, mx_handle_t bootstrap_pipe) {
         mx_handle_close(stack_vmo);
     }
 
-    if (proc_handle_loc != NULL) {
-        // This is our own proc handle, but we don't need it for anything.
-        if (*proc_handle_loc != MX_HANDLE_INVALID)
-            mx_handle_close(*proc_handle_loc);
-        // Reuse the slot for the child's handle.
-        *proc_handle_loc = mx_handle_duplicate(proc, MX_RIGHT_SAME_RIGHTS);
-        if (*proc_handle_loc < 0)
-            fail(log, *proc_handle_loc,
-                 "mx_handle_duplicate failed on child process handle\n");
-    }
+    // Reuse the slot for the child's handle.
+    *proc_handle_loc = mx_handle_duplicate(proc, MX_RIGHT_SAME_RIGHTS);
+    if (*proc_handle_loc < 0)
+        fail(log, *proc_handle_loc,
+             "mx_handle_duplicate failed on child process handle\n");
 
-    // create the initial thread in the new process
+    // Create the initial thread in the new process
     mx_handle_t thread = mx_thread_create(proc, filename, strlen(filename), 0);
     if (thread < 0)
         fail(log, thread, "mx_thread_create failed\n");
 
     if (thread_handle_loc != NULL) {
         // Reuse the slot for the child's handle.
+        // NOTE: Leaks the current thread handle the same way as the process handle.
         *thread_handle_loc = mx_handle_duplicate(thread, MX_RIGHT_SAME_RIGHTS);
         if (*thread_handle_loc < 0)
             fail(log, *thread_handle_loc,
@@ -188,8 +194,8 @@ static noreturn void bootstrap(mx_handle_t log, mx_handle_t bootstrap_pipe) {
     }
 
     // Now send the bootstrap message, consuming both our VMO handles.
-    status = mx_message_write(to_child, buffer, nbytes, handles, nhandles, 0);
-    check(log, status, "mx_message_write to child failed\n");
+    status = mx_msgpipe_write(to_child, buffer, nbytes, handles, nhandles, 0);
+    check(log, status, "mx_msgpipe_write to child failed\n");
     status = mx_handle_close(to_child);
     check(log, status, "mx_handle_close failed on message pipe handle\n");
 
@@ -206,7 +212,7 @@ static noreturn void bootstrap(mx_handle_t log, mx_handle_t bootstrap_pipe) {
         status = mx_handle_wait_one(
             proc, MX_SIGNAL_SIGNALED, MX_TIME_INFINITE, NULL);
         check(log, status, "mx_handle_wait_one on process failed\n");
-        do_shutdown(log);
+        do_shutdown(log, root_resource_handle);
     }
 
     // Now we've accomplished our purpose in life, and we can die happy.

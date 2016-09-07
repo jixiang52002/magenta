@@ -6,7 +6,6 @@
 
 #include <acpica/acpi.h>
 #include <magenta/processargs.h>
-#include <magenta/syscalls-ddk.h>
 #include <magenta/syscalls.h>
 #include <mxio/util.h>
 
@@ -20,7 +19,15 @@
 static ACPI_STATUS set_apic_irq_mode(void);
 static ACPI_STATUS init(void);
 
+mx_handle_t root_resource_handle;
+
 int main(int argc, char** argv) {
+    root_resource_handle = mxio_get_startup_handle(MX_HND_INFO(MX_HND_TYPE_USER0, 0));
+    if (root_resource_handle <= 0) {
+        printf("Failed to find root resource handle\n");
+        return 1;
+    }
+
     // Get handle from devmgr to serve as the ACPI root handle
     mx_handle_t acpi_root = mxio_get_startup_handle(MX_HND_INFO(MX_HND_TYPE_USER1, 0));
     if (acpi_root <= 0) {

@@ -29,6 +29,7 @@
 #include <platform.h>
 #include <target.h>
 #include <lib/heap.h>
+#include <lib/ktrace.h>
 #if WITH_KERNEL_VM
 #include <kernel/vm.h>
 #endif
@@ -208,12 +209,6 @@ thread_t *thread_create_etc(
 
     /* save whether or not we need to free the thread struct and/or stack */
     t->flags = flags;
-
-    /* inheirit thread local storage from the parent */
-    thread_t *current_thread = get_current_thread();
-    int i;
-    for (i=0; i < MAX_TLS_ENTRY; i++)
-        t->tls[i] = current_thread->tls[i];
 
     if (likely(alt_trampoline == NULL)) {
         alt_trampoline = initial_thread_func;
@@ -674,6 +669,11 @@ void thread_resched(void)
     if (thread_is_idle(newthread)) {
         thread_stats[cpu].last_idle_timestamp = current_time_hires();
     }
+#endif
+
+#if WITH_LIB_KTRACE
+    ktrace(TAG_CONTEXT_SWITCH, (uint32_t)newthread->user_tid, cpu | (oldthread->state << 16),
+           (uint32_t)(uintptr_t)oldthread, (uint32_t)(uintptr_t)newthread);
 #endif
 
     KEVLOG_THREAD_SWITCH(oldthread, newthread);
@@ -1192,14 +1192,6 @@ void dump_thread(thread_t *t)
 #if WITH_KERNEL_VM
     dprintf(INFO, "\taspace %p\n", t->aspace);
 #endif
-    if (MAX_TLS_ENTRY > 0) {
-        dprintf(INFO, "\ttls:");
-        int i;
-        for (i=0; i < MAX_TLS_ENTRY; i++) {
-            dprintf(INFO, " 0x%lx", t->tls[i]);
-        }
-        dprintf(INFO, "\n");
-    }
     arch_dump_thread(t);
 }
 

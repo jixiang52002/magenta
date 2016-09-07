@@ -7,7 +7,6 @@
 #include <ddk/protocol/device.h>
 #include <magenta/processargs.h>
 #include <magenta/syscalls.h>
-#include <magenta/syscalls-ddk.h>
 #include <mxio/debug.h>
 #include <mxio/util.h>
 #include <mxio/watcher.h>
@@ -18,11 +17,16 @@
 #include <threads.h>
 #include <unistd.h>
 
+#include "acpi.h"
 #include "devmgr.h"
 
 #define VC_COUNT 3
 
 mx_handle_t root_resource_handle;
+
+mx_handle_t get_root_resource(void) {
+    return root_resource_handle;
+}
 
 void devmgr_io_init(void) {
     // setup stdout
@@ -70,31 +74,68 @@ int devicehost(int argc, char** argv) {
 
 #if !LIBDRIVER
 
+static const uint8_t minfs_magic[16] = {
+    0x21, 0x4d, 0x69, 0x6e, 0x46, 0x53, 0x21, 0x00,
+    0x04, 0xd3, 0xd3, 0xd3, 0xd3, 0x00, 0x50, 0x38,
+};
+
+static const uint8_t gpt_magic[16] = {
+    0x45, 0x46, 0x49, 0x20, 0x50, 0x41, 0x52, 0x54,
+    0x00, 0x00, 0x01, 0x00, 0x5c, 0x00, 0x00, 0x00,
+};
+
+
+
 static mx_status_t block_device_added(int dirfd, const char* name, void* cookie) {
+    uint8_t data[4096];
     printf("devmgr: new block device: /dev/class/block/%s\n", name);
     int fd;
     if ((fd = openat(dirfd, name, O_RDWR)) < 0) {
         return NO_ERROR;
     }
 
-    // probe for partition table
-    mxio_ioctl(fd, IOCTL_DEVICE_BIND, "gpt", 4, NULL, 0);
-    close(fd);
+    if (read(fd, data, sizeof(data)) != sizeof(data)) {
+        close(fd);
+        printf("devmgr: cannot read: /dev/class/block/%s\n", name);
+        return NO_ERROR;
+    }
 
+    if (!memcmp(data + 0x200, gpt_magic, sizeof(gpt_magic))) {
+        printf("devmgr: /dev/class/block/%s: GPT?\n", name);
+        // probe for partition table
+        mxio_ioctl(fd, IOCTL_DEVICE_BIND, "gpt", 4, NULL, 0);
+    } else if(!memcmp(data, minfs_magic, sizeof(minfs_magic))) {
+        char path[MXIO_MAX_FILENAME + 64];
+        snprintf(path, sizeof(path), "/dev/class/block/%s", name);
+        const char* argv[] = { "/boot/bin/minfs", path, "mount" };
+        printf("devmgr: /dev/class/block/%s: minfs?\n", name);
+        devmgr_launch("minfs:/data", 3, argv, -1);
+    }
+
+    close(fd);
     return NO_ERROR;
 }
+
+static const char* argv_netsvc[] = { "/boot/bin/netsvc" };
+static const char* argv_mxsh[] = { "/boot/bin/mxsh" };
+static const char* argv_mxsh_autorun[] = { "/boot/bin/mxsh", "/boot/autorun" };
 
 int service_starter(void* arg) {
 #if !_MX_KERNEL_HAS_SHELL
     // if no kernel shell on serial uart, start a mxsh there
     printf("devmgr: shell startup\n");
-    devmgr_launch("mxsh:console", "/boot/bin/mxsh", NULL, "/dev/console");
+    int fd;
+    if ((fd = open("/dev/console", O_RDWR)) >= 0) {
+        devmgr_launch("mxsh:console", 1, argv_mxsh, fd);
+    }
 #endif
 
-    // launch the network service
-    devmgr_launch("netsvc", "/boot/bin/netsvc", NULL, NULL);
+    if (getenv("netsvc.disable") == NULL) {
+        // launch the network service
+        devmgr_launch("netsvc", 1, argv_netsvc, -1);
+    }
 
-    devmgr_launch("mxsh:autorun", "/boot/bin/mxsh", "/boot/autorun", NULL);
+    devmgr_launch("mxsh:autorun", 2, argv_mxsh_autorun, -1);
 
     int dirfd;
     if ((dirfd = open("/dev/class/block", O_DIRECTORY|O_RDONLY)) >= 0) {
@@ -112,9 +153,10 @@ static mx_status_t console_device_added(int dirfd, const char* name, void* cooki
 
     // start some shells on vcs
     for (unsigned i = 0; i < VC_COUNT; i++) {
-        char pname[32];
-        snprintf(pname, sizeof(pname), "mxsh:vc%u", i);
-        devmgr_launch(pname, "/boot/bin/mxsh", NULL, VC_DEVICE);
+        int fd;
+        if ((fd = openat(dirfd, name, O_RDWR)) >= 0) {
+            devmgr_launch("mxsh:vc", 1, argv_mxsh, fd);
+        }
     }
 
     // stop polling
@@ -153,15 +195,25 @@ int main(int argc, char** argv) {
     devmgr_init(false);
     devmgr_vfs_init();
 
-#if !defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
+    if (!getenv("crashlogger.disable")) {
+        static const char* argv_crashlogger[] = { "/boot/bin/crashlogger" };
+        devmgr_launch("crashlogger", 1, argv_crashlogger, -1);
+    }
+#else
     // Until crashlogging exists, ensure we see load info
     // from the linker in the log
     putenv(strdup("LD_DEBUG=1"));
-#else
-    char* disable_crashlogger = getenv("crashlogger.disable");
-    if (!disable_crashlogger)
-        devmgr_launch("crashlogger", "/boot/bin/crashlogger", NULL, NULL);
 #endif
+
+    mx_status_t status = devmgr_launch_acpisvc();
+    if (status != NO_ERROR) {
+        return 1;
+    }
+    // Ignore the return value of this; if it fails, it may just be that the
+    // platform doesn't support initing PCIe via ACPI.  If the platform needed
+    // it, it will fail later.
+    devmgr_init_pcie();
 
     printf("devmgr: load drivers\n");
     devmgr_init_builtin_drivers();
@@ -170,8 +222,11 @@ int main(int argc, char** argv) {
     if ((thrd_create_with_name(&t, service_starter, NULL, "service-starter")) == thrd_success) {
         thrd_detach(t);
     }
-    if ((thrd_create_with_name(&t, virtcon_starter, NULL, "virtcon-starter")) == thrd_success) {
-        thrd_detach(t);
+    if (getenv("virtcon.disable") == NULL) {
+        if ((thrd_create_with_name(&t, virtcon_starter, NULL,
+                                   "virtcon-starter")) == thrd_success) {
+            thrd_detach(t);
+        }
     }
 
     devmgr_handle_messages();

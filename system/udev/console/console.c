@@ -6,13 +6,14 @@
 #include <ddk/driver.h>
 
 #include <magenta/syscalls.h>
-#include <magenta/syscalls-ddk.h>
 #include <magenta/types.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <threads.h>
+
+extern mx_handle_t root_resource_handle;
 
 #define FIFOSIZE 256
 #define FIFOMASK (FIFOSIZE - 1)
@@ -48,7 +49,7 @@ static int debug_reader(void* arg) {
     uint8_t ch;
     printf("debug_reader()\n");
     for (;;) {
-        if (mx_debug_read((void*)&ch, 1) == 1) {
+        if (mx_debug_read(root_resource_handle, (void*)&ch, 1) == 1) {
             mtx_lock(&fifo.lock);
             if (fifo.head == fifo.tail) {
                 device_state_set(dev, DEV_STATE_READABLE);

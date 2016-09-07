@@ -25,6 +25,7 @@
 #include <magenta/io_port_dispatcher.h>
 #include <magenta/magenta.h>
 #include <magenta/process_dispatcher.h>
+#include <magenta/thread_dispatcher.h>
 
 #define LOCAL_TRACE 0
 
@@ -89,7 +90,7 @@ status_t UserThread::Initialize(mxtl::StringPiece name) {
     thread_set_exit_callback(&thread_, &ThreadExitCallback, reinterpret_cast<void*>(this));
 
     // set the per-thread pointer
-    thread_.tls[TLS_ENTRY_LKUSER] = reinterpret_cast<uintptr_t>(this);
+    lkthread->user_thread = reinterpret_cast<void*>(this);
 
     // associate the proc's address space with this thread
     process_->aspace()->AttachToThread(lkthread);
@@ -124,6 +125,9 @@ status_t UserThread::Start(uintptr_t entry, uintptr_t sp,
     // mark ourselves as running and resume the kernel thread
     SetState(State::RUNNING);
 
+#if WITH_LIB_KTRACE
+    thread_.user_tid = dispatcher_->get_koid();
+#endif
     thread_resume(&thread_);
 
     return NO_ERROR;
@@ -176,7 +180,7 @@ void UserThread::Kill() {
 
 void UserThread::DispatcherClosed() {
     LTRACE_ENTRY_OBJ;
-
+    dispatcher_ = nullptr;
     Kill();
 }
 

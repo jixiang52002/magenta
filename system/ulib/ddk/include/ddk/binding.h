@@ -4,8 +4,10 @@
 
 #pragma once
 
+#include <magenta/compiler.h>
 #include <stdint.h>
 
+__BEGIN_CDECLS;
 
 // COAABBBB VVVVVVVV  Condition Opcode paramA paramB Value
 
@@ -76,6 +78,7 @@
 #define BIND_USB_IFC_CLASS    0x0205
 #define BIND_USB_IFC_SUBCLASS 0x0206
 #define BIND_USB_IFC_PROTOCOL 0x0207
+#define BIND_USB_DEVICE_TYPE  0x0208
 
 typedef struct mx_bind_inst {
     uint32_t op;
@@ -98,3 +101,5 @@ mx_bind_inst_t i915_binding[] = {
     BI_ABORT(),
 };
 #endif
+
+__END_CDECLS;

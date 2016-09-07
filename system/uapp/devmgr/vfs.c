@@ -3,8 +3,8 @@
 // found in the LICENSE file.
 
 #include "vfs.h"
-#include "dnode.h"
 #include "devmgr.h"
+#include "dnode.h"
 
 #include <mxio/debug.h>
 #include <mxio/dispatcher.h>
@@ -15,9 +15,9 @@
 
 #include <magenta/listnode.h>
 
+#include <magenta/device/device.h>
 #include <magenta/processargs.h>
 #include <magenta/syscalls.h>
-#include <magenta/device/device.h>
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -50,7 +50,7 @@ void untrack_iostate(iostate_t* ios) {
     list_delete(&ios->node);
     mtx_unlock(&iostate_lock);
 #if DEBUG_TRACK_NAMES
-    free((void*) ios->fn);
+    free((void*)ios->fn);
     ios->fn = NULL;
 #endif
 }
@@ -80,11 +80,9 @@ static mx_status_t vfs_walk(vnode_t* vn, vnode_t** out,
             xprintf("vfs_walk: vn=%p name='%s' (remote)\n", vn, path);
             *out = vn;
             *pathout = path;
-#if WITH_REPLY_PIPE
             if (vn->remote > 0) {
                 return vn->remote;
             }
-#endif
             return ERR_NOT_FOUND;
         }
         if ((nextpath = strchr(path, '/')) != NULL) {
@@ -133,16 +131,14 @@ static mx_status_t vfs_open(vnode_t* vndir, vnode_t** out,
             return r;
         }
     } else {
-try_open:
+    try_open:
         if ((r = vndir->ops->lookup(vndir, &vn, path, len)) < 0) {
             return r;
         }
-#if WITH_REPLY_PIPE
         if (vn->remote > 0) {
             *pathout = ".";
             return vn->remote;
         }
-#endif
         if ((r = vn->ops->open(&vn, flags)) < 0) {
             xprintf("vn open r = %d", r);
             return r;
@@ -173,7 +169,7 @@ static mx_status_t vfs_get_handles(vnode_t* vn, bool as_dir, mx_handle_t* hnds, 
     mx_status_t r;
     if (vn->flags & V_FLAG_DEVICE && !as_dir) {
         // opening a device, get devmgr handles
-        r = devmgr_get_handles((mx_device_t*)vn->pdata, hnds, ids);
+        r = devmgr_get_handles((mx_device_t*)vn->pdata, NULL, hnds, ids);
     } else {
         // local vnode or device as a directory, we will create the handles
         hnds[0] = vfs_create_handle(vn, trackfn);
@@ -212,7 +208,6 @@ static mx_status_t _vfs_open(mxrio_msg_t* msg, mx_handle_t rh,
         xprintf("vfs: open: r=%d\n", r);
         return r;
     }
-#if WITH_REPLY_PIPE
     if (r > 0) {
         //TODO: unify remote vnodes and remote devices
         //      eliminate vfs_get_handles() and the other
@@ -223,13 +218,11 @@ static mx_status_t _vfs_open(mxrio_msg_t* msg, mx_handle_t rh,
         }
         return ERR_DISPATCHER_INDIRECT;
     }
-#endif
     uint32_t ids[VFS_MAX_HANDLES];
     if ((r = vfs_get_handles(vn, flags & O_DIRECTORY, msg->handle, ids, (const char*)msg->data)) < 0) {
         vn->ops->close(vn);
         return r;
     }
-#if WITH_REPLY_PIPE
     if (ids[0] == 0) {
         // device is non-local, handle is the server that
         // can clone it for us, redirect the rpc to there
@@ -241,7 +234,6 @@ static mx_status_t _vfs_open(mxrio_msg_t* msg, mx_handle_t rh,
         vn_release(vn);
         return ERR_DISPATCHER_INDIRECT;
     }
-#endif
     // drop the ref from open or create
     // the backend behind get_handles holds the on-going ref
     vn_release(vn);
@@ -268,7 +260,7 @@ static ssize_t do_ioctl(vnode_t* vn, uint32_t op, const void* in_buf, size_t in_
             return ERR_NO_MEMORY;
         }
         mx_handle_t h[2];
-        if (mx_message_pipe_create(h, 0) < 0) {
+        if (mx_msgpipe_create(h, 0) < 0) {
             free(watcher);
             return ERR_NO_RESOURCES;
         }
@@ -300,7 +292,7 @@ static mx_status_t _vfs_handler(mxrio_msg_t* msg, mx_handle_t rh, void* cookie) 
 
     switch (MXRIO_OP(msg->op)) {
     case MXRIO_OPEN: {
-        char* path = (char*) msg->data;
+        char* path = (char*)msg->data;
         if ((len < 1) || (len > 1024)) {
             return ERR_INVALID_ARGS;
         }
@@ -330,12 +322,23 @@ static mx_status_t _vfs_handler(mxrio_msg_t* msg, mx_handle_t rh, void* cookie) 
         }
         return r;
     }
+    case MXRIO_READ_AT: {
+        ssize_t r = vn->ops->read(vn, msg->data, arg, msg->arg2.off);
+        if (r >= 0) {
+            msg->datalen = r;
+        }
+        return r;
+    }
     case MXRIO_WRITE: {
         ssize_t r = vn->ops->write(vn, msg->data, len, ios->io_off);
         if (r >= 0) {
             ios->io_off += r;
             msg->arg2.off = ios->io_off;
         }
+        return r;
+    }
+    case MXRIO_WRITE_AT: {
+        ssize_t r = vn->ops->write(vn, msg->data, len, msg->arg2.off);
         return r;
     }
     case MXRIO_SEEK: {
@@ -437,7 +440,7 @@ static mx_status_t _vfs_handler(mxrio_msg_t* msg, mx_handle_t rh, void* cookie) 
         return r;
     }
     case MXRIO_UNLINK:
-        return vn->ops->unlink(vn, (const char*) msg->data, len);
+        return vn->ops->unlink(vn, (const char*)msg->data, len);
     default:
         return ERR_NOT_SUPPORTED;
     }
@@ -465,7 +468,7 @@ mx_handle_t vfs_create_handle(vnode_t* vn, const char* trackfn) {
         return ERR_NO_MEMORY;
     ios->vn = vn;
 
-    if ((r = mx_message_pipe_create(h, 0)) < 0) {
+    if ((r = mx_msgpipe_create(h, 0)) < 0) {
         free(ios);
         return r;
     }
@@ -511,7 +514,7 @@ static int vfs_watchdog(void* arg) {
 void vfs_init(vnode_t* root) {
     vfs_root = root;
     if (mxio_dispatcher_create(&vfs_dispatcher, mxrio_handler) == NO_ERROR) {
-        mxio_dispatcher_start(vfs_dispatcher);
+        mxio_dispatcher_start(vfs_dispatcher, "vfs-rio-dispatcher");
     }
     thrd_t t;
     thrd_create_with_name(&t, vfs_watchdog, NULL, "vfs-watchdog");
@@ -535,19 +538,19 @@ void vn_release(vnode_t* vn) {
 void vfs_dump_handles(void) {
     iostate_t* ios;
     mtx_lock(&iostate_lock);
-    list_for_every_entry(&iostate_list, ios, iostate_t, node) {
+    list_for_every_entry (&iostate_list, ios, iostate_t, node) {
         printf("obj %p '%s'\n", ios->vn, ios->fn ? ios->fn : "???");
     }
     mtx_unlock(&iostate_lock);
 }
 
 void vfs_notify_add(vnode_t* vn, const char* name, size_t len) {
-    xprintf("devfs: notify vn=%p name='%.*s'\n", vn, (int) len, name);
+    xprintf("devfs: notify vn=%p name='%.*s'\n", vn, (int)len, name);
     vnode_watcher_t* watcher;
     vnode_watcher_t* tmp;
-    list_for_every_entry_safe(&vn->watch_list, watcher, tmp, vnode_watcher_t, node) {
+    list_for_every_entry_safe (&vn->watch_list, watcher, tmp, vnode_watcher_t, node) {
         mx_status_t status;
-        if ((status = mx_message_write(watcher->h, name, len, NULL, 0, 0)) < 0) {
+        if ((status = mx_msgpipe_write(watcher->h, name, len, NULL, 0, 0)) < 0) {
             xprintf("devfs: watcher %p write failed %d\n", watcher, status);
             list_delete(&watcher->node);
             mx_handle_close(watcher->h);
@@ -557,4 +560,3 @@ void vfs_notify_add(vnode_t* vn, const char* name, size_t len) {
         }
     }
 }
-

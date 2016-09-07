@@ -110,7 +110,8 @@ static bool recv_msg_new_thread_handle(mx_handle_t handle, mx_handle_t* thread)
 
 static void resume_thread_from_exception(mx_handle_t process, mx_koid_t tid)
 {
-    mx_status_t status = mx_mark_exception_handled(process, tid, MX_EXCEPTION_STATUS_NOT_HANDLED);
+    mx_handle_t thread = mx_debug_task_get_child(process, tid);
+    mx_status_t status = mx_task_resume(thread, MX_RESUME_EXCEPTION | MX_RESUME_NOT_HANDLED);
     if (status < 0)
         tu_fatal("mx_mark_exception_handled", status);
 }
@@ -126,7 +127,7 @@ static bool test_received_exception(mx_handle_t eport,
                                     mx_koid_t* tid)
 {
     mx_exception_packet_t packet;
-    ASSERT_EQ(mx_io_port_wait(eport, &packet, sizeof(packet)), NO_ERROR, "mx_io_port_wait failed");
+    ASSERT_EQ(mx_port_wait(eport, &packet, sizeof(packet)), NO_ERROR, "mx_port_wait failed");
     const mx_exception_report_t* report = &packet.report;
 
     EXPECT_EQ(packet.hdr.key, 0u, "bad report key");
@@ -134,27 +135,21 @@ static bool test_received_exception(mx_handle_t eport,
     if (strcmp(kind, "system") == 0) {
         // Test mx_process_debug. System exception handlers don't already have
         // a handle on the process so this is a good place to test this.
-        mx_handle_t debug_child = mx_process_debug(MX_HANDLE_INVALID, report->context.pid);
+        mx_handle_t debug_child = mx_debug_task_get_child(MX_HANDLE_INVALID, report->context.pid);
         if (debug_child < 0)
             tu_fatal("mx_process_debug", debug_child);
-        mx_handle_basic_info_t process_info;
+        mx_info_handle_basic_t process_info;
         tu_handle_get_basic_info(debug_child, &process_info);
-        ASSERT_EQ(process_info.koid, report->context.pid, "mx_process_debug got pid mismatch");
+        ASSERT_EQ(process_info.rec.koid, report->context.pid, "mx_process_debug got pid mismatch");
         tu_handle_close(debug_child);
     } else if (strcmp(kind, "process") == 0) {
-#if 0 // MX_HND_TYPE_PROC_SELF doesn't work yet
-        mx_handle_t self = mxio_get_startup_handle(MX_HND_TYPE_PROC_SELF);
-        if (self == MX_HANDLE_INVALID)
-            tu_fatal("mxio_get_startup_handle", ERR_BAD_HANDLE - 1000);
-#else
-        mx_handle_t self = MX_HANDLE_INVALID;
-#endif
-        mx_handle_t debug_child = mx_process_debug(self, report->context.pid);
+        mx_handle_t self = mx_process_self();
+        mx_handle_t debug_child = mx_debug_task_get_child(self, report->context.pid);
         if (debug_child < 0)
             tu_fatal("mx_process_debug", debug_child);
-        mx_handle_basic_info_t process_info;
+        mx_info_handle_basic_t process_info;
         tu_handle_get_basic_info(debug_child, &process_info);
-        ASSERT_EQ(process_info.koid, report->context.pid, "mx_process_debug got pid mismatch");
+        ASSERT_EQ(process_info.rec.koid, report->context.pid, "mx_process_debug got pid mismatch");
         tu_handle_close(debug_child);
     } else if (strcmp(kind, "thread") == 0) {
         // TODO(dje)
@@ -162,9 +157,9 @@ static bool test_received_exception(mx_handle_t eport,
 
     // Verify the exception was from |process|.
     if (process != MX_HANDLE_INVALID) {
-        mx_handle_basic_info_t process_info;
+        mx_info_handle_basic_t process_info;
         tu_handle_get_basic_info(process, &process_info);
-        ASSERT_EQ(process_info.koid, report->context.pid, "wrong process in exception report");
+        ASSERT_EQ(process_info.rec.koid, report->context.pid, "wrong process in exception report");
     }
 
     unittest_printf("exception received from %s handler: pid %llu, tid %llu\n",
@@ -281,42 +276,44 @@ static intptr_t watchdog_thread_func(void* arg)
 
 static bool test_set_close_set(const char* kind, mx_handle_t object)
 {
+    if (object == 0)
+        object = mx_process_self();
     unittest_printf("%s exception handler set-close-set test\n", kind);
     mx_handle_t eport = tu_io_port_create(0);
     mx_status_t status;
     if (object < 0)
-        status = mx_set_system_exception_port(eport, 0, 0);
+        status = mx_object_bind_exception_port(0, eport, 0, 0);
     else
-        status = mx_set_exception_port(object, eport, 0, 0);
+        status = mx_object_bind_exception_port(object, eport, 0, 0);
     ASSERT_EQ(status, NO_ERROR, "error setting exception port");
     mx_handle_t eport2 = tu_io_port_create(0);
     if (object < 0)
-        status = mx_set_system_exception_port(eport, 0, 0);
+        status = mx_object_bind_exception_port(0, eport, 0, 0);
     else
-        status = mx_set_exception_port(object, eport, 0, 0);
+        status = mx_object_bind_exception_port(object, eport, 0, 0);
     ASSERT_NEQ(status, NO_ERROR, "setting exception port errantly succeeded");
     tu_handle_close(eport2);
     tu_handle_close(eport);
 #if 1 // TODO(dje): wip, close doesn't yet reset the exception port
     if (object < 0)
-        status = mx_set_system_exception_port(MX_HANDLE_INVALID, 0, 0);
+        status = mx_object_bind_exception_port(0, MX_HANDLE_INVALID, 0, 0);
     else
-        status = mx_set_exception_port(object, MX_HANDLE_INVALID, 0, 0);
+        status = mx_object_bind_exception_port(object, MX_HANDLE_INVALID, 0, 0);
     ASSERT_EQ(status, NO_ERROR, "error resetting exception port");
 #endif
     eport = tu_io_port_create(0);
     // Verify the close removed the previous handler.
     if (object < 0)
-        status = mx_set_system_exception_port(eport, 0, 0);
+        status = mx_object_bind_exception_port(0, eport, 0, 0);
     else
-        status = mx_set_exception_port(object, eport, 0, 0);
+        status = mx_object_bind_exception_port(object, eport, 0, 0);
     ASSERT_EQ(status, NO_ERROR, "error setting exception port (#2)");
     tu_handle_close(eport);
 #if 1 // TODO(dje): wip, close doesn't yet reset the exception port
     if (object < 0)
-        status = mx_set_system_exception_port(MX_HANDLE_INVALID, 0, 0);
+        status = mx_object_bind_exception_port(0, MX_HANDLE_INVALID, 0, 0);
     else
-        status = mx_set_exception_port(object, MX_HANDLE_INVALID, 0, 0);
+        status = mx_object_bind_exception_port(object, MX_HANDLE_INVALID, 0, 0);
     ASSERT_EQ(status, NO_ERROR, "error resetting exception port");
 #endif
     return true;
@@ -377,7 +374,7 @@ static bool system_handler_test(void)
     finish_basic_test("system", child, eport, our_pipe, MSG_CRASH);
 
 #if 1 // TODO(dje): wip, close doesn't yet reset the exception port
-    mx_status_t status = mx_set_system_exception_port(MX_HANDLE_INVALID, 0, 0);
+    mx_status_t status = mx_object_bind_exception_port(0, MX_HANDLE_INVALID, 0, 0);
     ASSERT_EQ(status, NO_ERROR, "error resetting system exception port");
 #endif
 

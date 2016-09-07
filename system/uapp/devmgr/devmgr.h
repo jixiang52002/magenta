@@ -39,7 +39,7 @@ void devmgr_device_set_bindable(mx_device_t* dev, bool bindable);
 
 mx_device_t* devmgr_device_root(void);
 
-mx_status_t devmgr_device_open(mx_device_t* dev, mx_device_t** out, uint32_t flags);
+mx_status_t devmgr_device_openat(mx_device_t* dev, mx_device_t** out, const char* path, uint32_t flags);
 mx_status_t devmgr_device_close(mx_device_t* dev);
 
 mx_status_t devmgr_control(const char* cmd);
@@ -54,10 +54,10 @@ void devmgr_handle_messages(void);
 
 void devmgr_io_init(void);
 void devmgr_vfs_init(void);
-void devmgr_launch(const char* name, const char* app, const char* arg, const char* device);
+void devmgr_launch(const char* name, int argc, const char** argv, int stdiofd);
 void devmgr_launch_devhost(const char* name, mx_handle_t h, const char* arg0, const char* arg1);
 
-mx_status_t devmgr_get_handles(mx_device_t* dev, mx_handle_t* handles, uint32_t* ids);
+mx_status_t devmgr_get_handles(mx_device_t* dev, const char* path, mx_handle_t* handles, uint32_t* ids);
 
 int devmgr_get_pcidev_index(mx_device_t* dev, uint16_t* vid, uint16_t* did);
 mx_status_t devmgr_create_pcidev(mx_device_t** out, uint32_t index);

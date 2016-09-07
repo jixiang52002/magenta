@@ -10,7 +10,8 @@
 
 #include <hw/inout.h>
 #include <magenta/syscalls.h>
-#include <magenta/syscalls-ddk.h>
+
+extern mx_handle_t root_resource_handle;
 
 #if !defined(__x86_64__) && !defined(__x86__)
 #error "Unsupported architecture"
@@ -53,7 +54,7 @@ ACPI_STATUS AcpiOsInitialize() {
         return status;
     }
     /* TODO(teisenbe): be less permissive */
-    mx_mmap_device_io(0, 65536);
+    mx_mmap_device_io(root_resource_handle, 0, 65536);
     return AE_OK;
 }
 
@@ -80,7 +81,7 @@ ACPI_PHYSICAL_ADDRESS AcpiOsGetRootPointer() {
     ACPI_PHYSICAL_ADDRESS TableAddress = 0;
     ACPI_STATUS status = AcpiFindRootPointer(&TableAddress);
 
-    uint32_t uefi_rsdp = mx_acpi_uefi_rsdp();
+    uint32_t uefi_rsdp = mx_acpi_uefi_rsdp(root_resource_handle);
     if (uefi_rsdp != 0) {
         return uefi_rsdp;
     }
@@ -246,7 +247,8 @@ void *AcpiOsMapMemory(
 
     void* vaddr = NULL;
     // TODO(teisenbe): Replace this with a VMO-based system
-    mx_status_t status = mx_mmap_device_memory(aligned_address, end - aligned_address,
+    mx_status_t status = mx_mmap_device_memory(root_resource_handle,
+                                               aligned_address, end - aligned_address,
                                                MX_CACHE_POLICY_CACHED, &vaddr);
     if (status != NO_ERROR) {
         return NULL;
@@ -588,7 +590,7 @@ struct acpi_irq_thread_arg {
 static int acpi_irq_thread(void *arg) {
     struct acpi_irq_thread_arg *real_arg = (struct acpi_irq_thread_arg *)arg;
     while (1) {
-        mx_status_t status = mx_interrupt_event_wait(real_arg->irq_handle);
+        mx_status_t status = mx_interrupt_wait(real_arg->irq_handle);
         if (status != NO_ERROR) {
             continue;
         }
@@ -596,7 +598,7 @@ static int acpi_irq_thread(void *arg) {
         // TODO: Should we do something with the return value from the handler?
         real_arg->handler(real_arg->context);
 
-        mx_interrupt_event_complete(real_arg->irq_handle);
+        mx_interrupt_complete(real_arg->irq_handle);
     }
     return 0;
 }
@@ -640,7 +642,7 @@ ACPI_STATUS AcpiOsInstallInterruptHandler(
         return AE_NO_MEMORY;
     }
 
-    mx_handle_t handle = mx_interrupt_event_create(InterruptLevel, MX_FLAG_REMAP_IRQ);
+    mx_handle_t handle = mx_interrupt_create(root_resource_handle, InterruptLevel, MX_FLAG_REMAP_IRQ);
     if (handle < 0) {
         free(arg);
         return AE_ERROR;

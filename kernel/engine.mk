@@ -73,7 +73,7 @@ GLOBAL_CONFIG_HEADER := $(BUILDDIR)/config-global.h
 KERNEL_CONFIG_HEADER := $(BUILDDIR)/config-kernel.h
 USER_CONFIG_HEADER := $(BUILDDIR)/config-user.h
 
-GLOBAL_INCLUDES := global/include
+GLOBAL_INCLUDES := system/public system/private
 GLOBAL_OPTFLAGS ?= $(ARCH_OPTFLAGS)
 GLOBAL_COMPILEFLAGS := -g -finline -include $(GLOBAL_CONFIG_HEADER)
 GLOBAL_COMPILEFLAGS += -Wall -Wextra -Wno-multichar -Werror -Wno-unused-parameter -Wno-unused-function -Wno-unused-label -Werror=return-type -Wno-nonnull-compare
@@ -98,7 +98,10 @@ KERNEL_CPPFLAGS :=
 KERNEL_ASMFLAGS :=
 
 # User space compile flags
-USER_COMPILEFLAGS := -fno-omit-frame-pointer -include $(USER_CONFIG_HEADER) -fPIC -D_ALL_SOURCE=1
+USER_COMPILEFLAGS := -include $(USER_CONFIG_HEADER) -fPIC -D_ALL_SOURCE=1
+USER_COMPILEFLAGS += -DDEPRECATE_COMPAT_SYSCALLS=1
+#TODO: remove once userspace backtracing is smarter
+USER_COMPILEFLAGS += -fno-omit-frame-pointer
 USER_CFLAGS :=
 USER_CPPFLAGS :=
 USER_ASMFLAGS :=
@@ -196,6 +199,9 @@ EXTRA_BUILDDEPS :=
 # any rules you put here will be depended on in clean builds
 EXTRA_CLEANDEPS :=
 
+# build ids
+EXTRA_IDFILES :=
+
 # any objects you put here get linked with the final image
 EXTRA_OBJS :=
 
@@ -260,13 +266,27 @@ include make/recurse.mk
 # host tools
 include system/tools/build.mk
 
+ifneq ($(EXTRA_IDFILES),)
+$(BUILDDIR)/ids.txt: $(EXTRA_IDFILES)
+	@echo generating $@
+	@rm -f $@.tmp
+	@for f in $(EXTRA_IDFILES); do \
+	echo `cat $$f` `echo $$f | sed 's/\.id$$//g'` >> $@.tmp; \
+	done; \
+	mv $@.tmp $@
+
+EXTRA_BUILDDEPS += $(BUILDDIR)/ids.txt
+GENERATED += $(BUILDDIR)/ids.txt
+endif
+
 ifeq ($(call TOBOOL,$(ENABLE_BUILD_SYSROOT)),true)
 # identify global headers to copy to the sysroot
-GLOBAL_HEADERS := $(shell find global/include -name \*\.h)
-GLOBAL_HEADERS := $(patsubst global/include/%,$(BUILDDIR)/sysroot/include/%,$(GLOBAL_HEADERS))
+GLOBAL_HEADERS := $(shell find system/public -name \*\.h -or -name \*\.inc)
+GLOBAL_HEADERS := $(patsubst system/public/%,$(BUILDDIR)/sysroot/include/%,$(GLOBAL_HEADERS))
 
 # generate rule to copy them
-$(call copy-dst-src,$(BUILDDIR)/sysroot/include/%.h,global/include/%.h)
+$(call copy-dst-src,$(BUILDDIR)/sysroot/include/%.h,system/public/%.h)
+$(call copy-dst-src,$(BUILDDIR)/sysroot/include/%.inc,system/public/%.inc)
 
 SYSROOT_DEPS += $(GLOBAL_HEADERS)
 GENERATED += $(GLOBAL_HEADERS)
@@ -300,10 +320,6 @@ all:: $(EXTRA_BUILDDEPS) $(SYSROOT_DEPS)
 
 # make the build depend on all of the user apps
 all:: $(foreach app,$(ALLUSER_APPS),$(app) $(app).strip)
-
-ifeq ($(call TOBOOL,$(ENABLE_BUILD_LISTFILES)),true)
-all:: $(foreach app,$(ALLUSER_APPS),$(app).lst $(app).dump)
-endif
 
 # add some automatic configuration defines
 KERNEL_DEFINES += \
@@ -349,6 +365,7 @@ USER_LD := $(LD)
 endif
 OBJDUMP := $(TOOLCHAIN_PREFIX)objdump
 OBJCOPY := $(TOOLCHAIN_PREFIX)objcopy
+READELF := $(TOOLCHAIN_PREFIX)readelf
 CPPFILT := $(TOOLCHAIN_PREFIX)c++filt
 SIZE := $(TOOLCHAIN_PREFIX)size
 NM := $(TOOLCHAIN_PREFIX)nm

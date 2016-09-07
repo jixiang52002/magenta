@@ -9,6 +9,8 @@
 #include <magenta/compiler.h>
 #include <stdint.h>
 
+__BEGIN_CDECLS;
+
 typedef struct mx_device mx_device_t;
 typedef struct mx_protocol_device mx_protocol_device_t;
 
@@ -74,6 +76,9 @@ void driver_add(mx_driver_t* driver);
 void driver_remove(mx_driver_t* driver);
 void driver_unbind(mx_driver_t* driver, mx_device_t* dev);
 
+// temporary accessor for root resource handle
+mx_handle_t get_root_resource(void);
+
 // panic is for handling non-recoverable, non-reportable fatal
 // errors in a way that will get logged.  Right now this just
 // does a bogus write to unmapped memory.
@@ -92,3 +97,5 @@ enum {
 #define BUILTIN_DRIVER       \
     __ALIGNED(sizeof(void*)) \
     __SECTION("builtin_drivers")
+
+__END_CDECLS;

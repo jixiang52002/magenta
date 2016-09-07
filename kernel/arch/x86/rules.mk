@@ -69,6 +69,7 @@ MODULE_SRCS += \
 \
 	$(LOCAL_DIR)/arch.c \
 	$(LOCAL_DIR)/cache.c \
+	$(LOCAL_DIR)/cpu_topology.c \
 	$(LOCAL_DIR)/descriptor.c \
 	$(LOCAL_DIR)/faults.c \
 	$(LOCAL_DIR)/feature.c \
@@ -103,7 +104,6 @@ MODULE_SRCS += \
 	$(SUBARCH_DIR)/bootstrap16.c \
 	$(SUBARCH_DIR)/smp.c \
 	$(SUBARCH_DIR)/start16.S \
-	$(SUBARCH_DIR)/suspend.S \
 	$(SUBARCH_DIR)/uspace_entry.S
 endif # SUBARCH x86-64
 ifeq ($(SUBARCH),x86-32)

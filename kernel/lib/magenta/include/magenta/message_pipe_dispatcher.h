@@ -15,8 +15,8 @@
 #include <magenta/state_tracker.h>
 #include <magenta/types.h>
 
-#include <utils/ref_counted.h>
-#include <utils/unique_ptr.h>
+#include <mxtl/ref_counted.h>
+#include <mxtl/unique_ptr.h>
 
 class IOPortClient;
 class IOPortDispatcher;
@@ -27,8 +27,7 @@ public:
                            mxtl::RefPtr<Dispatcher>* dispatcher1, mx_rights_t* rights);
 
     ~MessagePipeDispatcher() final;
-    mx_obj_type_t GetType() const final { return MX_OBJ_TYPE_MESSAGE_PIPE; }
-    MessagePipeDispatcher* get_message_pipe_dispatcher() final { return this; }
+    mx_obj_type_t get_type() const final { return MX_OBJ_TYPE_MESSAGE_PIPE; }
     StateTracker* get_state_tracker() final;
     mx_koid_t get_inner_koid() const final { return pipe_->get_koid(); }
 

@@ -2,9 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <ddk/protocol/usb-device.h>
 #include <endian.h>
-#include <hw/usb.h>
+#include <magenta/hw/usb.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -132,7 +131,12 @@ static mx_status_t xhci_address_device(xhci_t* xhci, uint32_t slot_id, uint32_t 
     xhci_post_command(xhci, TRB_CMD_ADDRESS_DEVICE, xhci_virt_to_phys(xhci, (mx_vaddr_t)icc),
                       (slot_id << TRB_SLOT_ID_START), &command.context);
     int cc = xhci_sync_command_wait(&command);
-    return (cc == TRB_CC_SUCCESS ? NO_ERROR : ERR_INTERNAL);
+    if (cc == TRB_CC_SUCCESS) {
+        return NO_ERROR;
+    } else {
+        printf("xhci_address_device failed cc: %d\n", cc);
+        return ERR_INTERNAL;
+    }
 }
 
 #define NEXT_DESCRIPTOR(header) ((usb_descriptor_header_t*)((void*)header + header->bLength))
@@ -285,9 +289,8 @@ static mx_status_t xhci_handle_enumerate_device(xhci_t* xhci, uint32_t hub_addre
     xhci_slot_t* slot = &xhci->slots[slot_id];
     memset(slot, 0, sizeof(*slot));
 
-    mx_status_t status = xhci_address_device(xhci, slot_id, hub_address, port, speed);
-    if (status != NO_ERROR) {
-        printf("xhci_address_device failed\n");
+    result = xhci_address_device(xhci, slot_id, hub_address, port, speed);
+    if (result != NO_ERROR) {
         goto disable_slot_exit;
     }
     slot->enabled = true;
@@ -458,28 +461,25 @@ static mx_status_t xhci_handle_disconnect_device(xhci_t* xhci, uint32_t hub_addr
     slot->enabled = false;
     xhci_transfer_ring_t* transfer_rings = slot->transfer_rings;
 
-    // wait for all requests to complete
-    xprintf("waiting for requests to complete\n");
+    uint32_t drop_flags = 0;
     for (int i = 0; i < XHCI_NUM_EPS; i++) {
         xhci_transfer_ring_t* transfer_ring = &transfer_rings[i];
         if (transfer_ring->start) {
-            transfer_ring->dead = true;
-            completion_wait(&transfer_ring->completion, MX_TIME_INFINITE);
-            xhci_transfer_ring_free(xhci, transfer_ring);
-        }
-    }
-    xprintf("requests completed\n");
-
-    xhci_remove_device(xhci, slot_id);
-
-    uint32_t drop_flags = 0;
-    for (int i = 1; i < XHCI_NUM_EPS; i++) {
-        if (transfer_rings[i].start) {
             xhci_stop_endpoint(xhci, slot_id, i);
             drop_flags |= XHCI_ICC_EP_FLAG(i);
+
+            // complete pending requests
+            xhci_transfer_context_t* context;
+            while ((context = list_remove_head_type(&transfer_ring->pending_requests,
+                                                    xhci_transfer_context_t, node)) != NULL) {
+                context->callback(ERR_REMOTE_CLOSED, context->data);
+            }
+            // and any deferred requests
+            xhci_process_deferred_txns(xhci, transfer_ring, true);
         }
     }
-    xhci_stop_endpoint(xhci, slot_id, 0);
+
+    xhci_remove_device(xhci, slot_id);
 
     xhci_input_control_context_t* icc = (xhci_input_control_context_t*)&xhci->input_context[0 * xhci->context_size];
     memset((void*)icc, 0, xhci->context_size);

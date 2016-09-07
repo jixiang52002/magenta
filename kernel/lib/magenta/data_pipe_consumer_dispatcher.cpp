@@ -40,17 +40,20 @@ StateTracker* DataPipeConsumerDispatcher::get_state_tracker() {
     return pipe_->get_consumer_state_tracker();
 }
 
-mx_status_t DataPipeConsumerDispatcher::Read(void* buffer, mx_size_t* requested) {
-    return pipe_->ConsumerReadFromUser(buffer, requested);
+mx_status_t DataPipeConsumerDispatcher::Read(void* buffer,
+                                             mx_size_t* requested,
+                                             bool all_or_none,
+                                             bool discard,
+                                             bool peek) {
+    return pipe_->ConsumerReadFromUser(buffer, requested, all_or_none, discard, peek);
 }
 
-mx_status_t DataPipeConsumerDispatcher::BeginRead(mxtl::RefPtr<VmAspace> aspace,
-                                                  void** buffer, mx_size_t* requested) {
-    if (*requested > kMaxDataPipeCapacity) {
-        *requested = kMaxDataPipeCapacity;
-    }
+mx_ssize_t DataPipeConsumerDispatcher::Query() {
+    return pipe_->ConsumerQuery();
+}
 
-    return pipe_->ConsumerReadBegin(mxtl::move(aspace), buffer, requested);
+mx_ssize_t DataPipeConsumerDispatcher::BeginRead(mxtl::RefPtr<VmAspace> aspace, void** buffer) {
+    return pipe_->ConsumerReadBegin(mxtl::move(aspace), buffer);
 }
 
 mx_status_t DataPipeConsumerDispatcher::EndRead(mx_size_t read) {

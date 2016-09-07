@@ -16,7 +16,7 @@
 #include <dev/udisplay.h>
 #include <kernel/vm.h>
 #include <lib/user_copy.h>
-#include <utils/user_ptr.h>
+#include <mxtl/user_ptr.h>
 
 #include <magenta/interrupt_dispatcher.h>
 #include <magenta/magenta.h>
@@ -39,8 +39,14 @@ static_assert(MX_CACHE_POLICY_UNCACHED_DEVICE == ARCH_MMU_FLAG_UNCACHED_DEVICE,
 static_assert(MX_CACHE_POLICY_WRITE_COMBINING == ARCH_MMU_FLAG_WRITE_COMBINING,
               "Cache policy constant mismatch - WRITE_COMBINING");
 
-mx_handle_t sys_interrupt_event_create(uint32_t vector, uint32_t flags) {
+mx_handle_t sys_interrupt_create(mx_handle_t hrsrc, uint32_t vector, uint32_t flags) {
     LTRACEF("vector %u flags 0x%x\n", vector, flags);
+
+    // TODO: finer grained validation
+    mx_status_t status;
+    if ((status = validate_resource_handle(hrsrc)) < 0) {
+        return status;
+    }
 
     mxtl::RefPtr<Dispatcher> dispatcher;
     mx_rights_t rights;
@@ -56,45 +62,41 @@ mx_handle_t sys_interrupt_event_create(uint32_t vector, uint32_t flags) {
     return hv;
 }
 
-mx_status_t sys_interrupt_event_wait(mx_handle_t handle_value) {
+mx_status_t sys_interrupt_wait(mx_handle_t handle_value) {
     LTRACEF("handle %u\n", handle_value);
 
-    uint32_t rights = 0u;
-    mxtl::RefPtr<Dispatcher> dispatcher;
-
     auto up = ProcessDispatcher::GetCurrent();
-    if (!up->GetDispatcher(handle_value, &dispatcher, &rights))
-        return ERR_BAD_HANDLE;
-
-    auto interrupt = dispatcher->get_interrupt_dispatcher();
-    if (!interrupt)
-        return ERR_WRONG_TYPE;
+    mxtl::RefPtr<InterruptDispatcher> interrupt;
+    mx_status_t status = up->GetDispatcher(handle_value, &interrupt);
+    if (status != NO_ERROR)
+        return status;
 
     return interrupt->InterruptWait();
 }
 
-mx_status_t sys_interrupt_event_complete(mx_handle_t handle_value) {
+mx_status_t sys_interrupt_complete(mx_handle_t handle_value) {
     LTRACEF("handle %u\n", handle_value);
 
-    uint32_t rights = 0u;
-    mxtl::RefPtr<Dispatcher> dispatcher;
-
     auto up = ProcessDispatcher::GetCurrent();
-    if (!up->GetDispatcher(handle_value, &dispatcher, &rights))
-        return ERR_BAD_HANDLE;
-
-    auto interrupt = dispatcher->get_interrupt_dispatcher();
-    if (!interrupt)
-        return ERR_WRONG_TYPE;
+    mxtl::RefPtr<InterruptDispatcher> interrupt;
+    mx_status_t status = up->GetDispatcher(handle_value, &interrupt);
+    if (status != NO_ERROR)
+        return status;
 
     return interrupt->InterruptComplete();
 }
 
-mx_status_t sys_mmap_device_memory(uintptr_t paddr, uint32_t len,
+mx_status_t sys_mmap_device_memory(mx_handle_t hrsrc, uintptr_t paddr, uint32_t len,
                                    mx_cache_policy_t cache_policy,
                                    mxtl::user_ptr<void*> out_vaddr) {
 
     LTRACEF("addr 0x%lx len 0x%x\n", paddr, len);
+
+    // TODO: finer grained validation
+    mx_status_t status;
+    if ((status = validate_resource_handle(hrsrc)) < 0) {
+        return status;
+    }
 
     if (!out_vaddr)
         return ERR_INVALID_ARGS;
@@ -137,8 +139,15 @@ mx_status_t sys_mmap_device_memory(uintptr_t paddr, uint32_t len,
     return NO_ERROR;
 }
 
-mx_status_t sys_alloc_device_memory(uint32_t len, mx_paddr_t* out_paddr, void** out_vaddr) {
+mx_status_t sys_alloc_device_memory(mx_handle_t hrsrc, uint32_t len,
+                                    mx_paddr_t* out_paddr, void** out_vaddr) {
     LTRACEF("len 0x%x\n", len);
+
+    // TODO: finer grained validation
+    mx_status_t status;
+    if ((status = validate_resource_handle(hrsrc)) < 0) {
+        return status;
+    }
 
     if (!out_paddr)
         return ERR_INVALID_ARGS;
@@ -190,7 +199,13 @@ mx_status_t sys_bootloader_fb_get_info(uint32_t* format, uint32_t* width, uint32
 #endif
 }
 
-mx_status_t sys_set_framebuffer(void* vaddr, uint32_t len, uint32_t format, uint32_t width, uint32_t height, uint32_t stride) {
+mx_status_t sys_set_framebuffer(mx_handle_t hrsrc, void* vaddr, uint32_t len, uint32_t format, uint32_t width, uint32_t height, uint32_t stride) {
+    // TODO: finer grained validation
+    mx_status_t status;
+    if ((status = validate_resource_handle(hrsrc)) < 0) {
+        return status;
+    }
+
     intptr_t paddr = vaddr_to_paddr(vaddr);
     udisplay_set_framebuffer(paddr, vaddr, len);
 
@@ -225,17 +240,12 @@ static status_t pcie_irq_swizzle_from_table(const pcie_device_state_t* dev, uint
 
 mx_status_t sys_pci_init(mx_handle_t handle, mxtl::user_ptr<mx_pci_init_arg_t> init_buf, uint32_t len) {
 
-    auto up = ProcessDispatcher::GetCurrent();
-    mxtl::RefPtr<Dispatcher> dispatcher;
-    uint32_t rights;
-
-    if (!up->GetDispatcher(handle, &dispatcher, &rights)) {
-        return ERR_BAD_HANDLE;
-    }
-    if (dispatcher->GetType() != MX_OBJ_TYPE_RESOURCE) {
-        return ERR_WRONG_TYPE;
-    }
+    // TODO: finer grained validation
     // TODO(security): Add additional access checks
+    mx_status_t status;
+    if ((status = validate_resource_handle(handle)) < 0) {
+        return status;
+    }
 
     mxtl::unique_ptr<mx_pci_init_arg_t, mxtl::free_delete> arg;
 
@@ -360,13 +370,19 @@ mx_status_t sys_pci_init(mx_handle_t handle, mxtl::user_ptr<mx_pci_init_arg_t> i
     return pcie_init(&init_info);
 }
 
-mx_handle_t sys_pci_get_nth_device(uint32_t index, mx_pcie_get_nth_info_t* out_info) {
+mx_handle_t sys_pci_get_nth_device(mx_handle_t hrsrc, uint32_t index, mx_pcie_get_nth_info_t* out_info) {
     /**
      * Returns the pci config of a device.
      * @param index Device index
      * @param out_info Device info (BDF address, vendor id, etc...)
      */
     LTRACE_ENTRY;
+
+    // TODO: finer grained validation
+    mx_status_t status;
+    if ((status = validate_resource_handle(hrsrc)) < 0) {
+        return status;
+    }
 
     if (!out_info)
         return ERR_INVALID_ARGS;
@@ -402,18 +418,11 @@ mx_status_t sys_pci_claim_device(mx_handle_t handle) {
     LTRACEF("handle %u\n", handle);
 
     auto up = ProcessDispatcher::GetCurrent();
-    mxtl::RefPtr<Dispatcher> dispatcher;
-    uint32_t rights;
 
-    if (!up->GetDispatcher(handle, &dispatcher, &rights))
-        return ERR_BAD_HANDLE;
-
-    auto pci_device = dispatcher->get_pci_device_dispatcher();
-    if (!pci_device)
-        return ERR_WRONG_TYPE;
-
-    if (!magenta_rights_check(rights, MX_RIGHT_WRITE))
-        return ERR_ACCESS_DENIED;
+    mxtl::RefPtr<PciDeviceDispatcher> pci_device;
+    mx_status_t status = up->GetDispatcher(handle, &pci_device, MX_RIGHT_WRITE);
+    if (status != NO_ERROR)
+        return status;
 
     return pci_device->ClaimDevice();
 }
@@ -427,18 +436,11 @@ mx_status_t sys_pci_enable_bus_master(mx_handle_t handle, bool enable) {
     LTRACEF("handle %u\n", handle);
 
     auto up = ProcessDispatcher::GetCurrent();
-    mxtl::RefPtr<Dispatcher> dispatcher;
-    uint32_t rights;
 
-    if (!up->GetDispatcher(handle, &dispatcher, &rights))
-        return ERR_BAD_HANDLE;
-
-    auto pci_device = dispatcher->get_pci_device_dispatcher();
-    if (!pci_device)
-        return ERR_WRONG_TYPE;
-
-    if (!magenta_rights_check(rights, MX_RIGHT_WRITE))
-        return ERR_ACCESS_DENIED;
+    mxtl::RefPtr<PciDeviceDispatcher> pci_device;
+    mx_status_t status = up->GetDispatcher(handle, &pci_device, MX_RIGHT_WRITE);
+    if (status != NO_ERROR)
+        return status;
 
     return pci_device->EnableBusMaster(enable);
 }
@@ -451,18 +453,11 @@ mx_status_t sys_pci_reset_device(mx_handle_t handle) {
     LTRACEF("handle %u\n", handle);
 
     auto up = ProcessDispatcher::GetCurrent();
-    mxtl::RefPtr<Dispatcher> dispatcher;
-    uint32_t rights;
 
-    if (!up->GetDispatcher(handle, &dispatcher, &rights))
-        return ERR_BAD_HANDLE;
-
-    auto pci_device = dispatcher->get_pci_device_dispatcher();
-    if (!pci_device)
-        return ERR_WRONG_TYPE;
-
-    if (!magenta_rights_check(rights, MX_RIGHT_WRITE))
-        return ERR_ACCESS_DENIED;
+    mxtl::RefPtr<PciDeviceDispatcher> pci_device;
+    mx_status_t status = up->GetDispatcher(handle, &pci_device, MX_RIGHT_WRITE);
+    if (status != NO_ERROR)
+        return status;
 
     return pci_device->ResetDevice();
 }
@@ -475,23 +470,16 @@ mx_handle_t sys_pci_map_mmio(mx_handle_t handle, uint32_t bar_num, mx_cache_poli
      */
     LTRACEF("handle %u\n", handle);
 
-    auto up = ProcessDispatcher::GetCurrent();
-    mxtl::RefPtr<Dispatcher> dispatcher;
-    uint32_t rights;
-
     // Caller only gets to control the cache policy, nothing else.
     if (cache_policy & ~ARCH_MMU_FLAG_CACHE_MASK)
         return ERR_INVALID_ARGS;
 
-    if (!up->GetDispatcher(handle, &dispatcher, &rights))
-        return ERR_BAD_HANDLE;
+    auto up = ProcessDispatcher::GetCurrent();
 
-    auto pci_device = dispatcher->get_pci_device_dispatcher();
-    if (!pci_device)
-        return ERR_WRONG_TYPE;
-
-    if (!magenta_rights_check(rights, MX_RIGHT_WRITE))
-        return ERR_ACCESS_DENIED;
+    mxtl::RefPtr<PciDeviceDispatcher> pci_device;
+    mx_status_t status = up->GetDispatcher(handle, &pci_device, MX_RIGHT_WRITE);
+    if (status != NO_ERROR)
+        return status;
 
     mx_rights_t mmio_rights;
     mxtl::RefPtr<Dispatcher> mmio_io_mapping;
@@ -544,20 +532,15 @@ mx_handle_t sys_pci_map_interrupt(mx_handle_t handle_value, int32_t which_irq) {
     LTRACEF("handle %u\n", handle_value);
 
     auto up = ProcessDispatcher::GetCurrent();
-    mxtl::RefPtr<Dispatcher> device_dispatcher;
-    uint32_t rights;
 
-    if (!up->GetDispatcher(handle_value, &device_dispatcher, &rights))
-        return ERR_BAD_HANDLE;
-
-    auto pci_device = device_dispatcher->get_pci_device_dispatcher();
-    if (!pci_device)
-        return ERR_WRONG_TYPE;
-
-    if (!magenta_rights_check(rights, MX_RIGHT_READ))
-        return ERR_ACCESS_DENIED;
+    mxtl::RefPtr<PciDeviceDispatcher> pci_device;
+    mx_status_t status =
+        up->GetDispatcher(handle_value, &pci_device, MX_RIGHT_READ);
+    if (status != NO_ERROR)
+        return status;
 
     mxtl::RefPtr<Dispatcher> interrupt_dispatcher;
+    mx_rights_t rights;
     status_t result = pci_device->MapInterrupt(which_irq, &interrupt_dispatcher, &rights);
     if (result != NO_ERROR)
         return result;
@@ -578,18 +561,12 @@ mx_status_t sys_pci_interrupt_wait(mx_handle_t handle) {
      * @param handle Handle associated with a PCI interrupt
      */
     auto up = ProcessDispatcher::GetCurrent();
-    mxtl::RefPtr<Dispatcher> dispatcher;
-    uint32_t rights;
 
-    if (!up->GetDispatcher(handle, &dispatcher, &rights))
-        return ERR_BAD_HANDLE;
-
-    auto pci_interrupt = dispatcher->get_pci_interrupt_dispatcher();
-    if (!pci_interrupt)
-        return ERR_WRONG_TYPE;
-
-    if (!magenta_rights_check(rights, MX_RIGHT_READ))
-        return ERR_ACCESS_DENIED;
+    mxtl::RefPtr<PciInterruptDispatcher> pci_interrupt;
+    mx_status_t status =
+        up->GetDispatcher(handle, &pci_interrupt, MX_RIGHT_READ);
+    if (status != NO_ERROR)
+        return status;
 
     return pci_interrupt->InterruptWait();
 }
@@ -604,18 +581,11 @@ mx_handle_t sys_pci_map_config(mx_handle_t handle) {
     LTRACEF("handle %u\n", handle);
 
     auto up = ProcessDispatcher::GetCurrent();
-    mxtl::RefPtr<Dispatcher> dispatcher;
-    uint32_t rights;
 
-    if (!up->GetDispatcher(handle, &dispatcher, &rights))
-        return ERR_BAD_HANDLE;
-
-    auto pci_device = dispatcher->get_pci_device_dispatcher();
-    if (!pci_device)
-        return ERR_WRONG_TYPE;
-
-    if (!magenta_rights_check(rights, MX_RIGHT_READ))
-        return ERR_ACCESS_DENIED;
+    mxtl::RefPtr<PciDeviceDispatcher> pci_device;
+    mx_status_t status = up->GetDispatcher(handle, &pci_device, MX_RIGHT_READ);
+    if (status != NO_ERROR)
+        return status;
 
     mx_rights_t config_rights;
     mxtl::RefPtr<Dispatcher> config_io_mapping;
@@ -644,18 +614,11 @@ mx_status_t sys_pci_query_irq_mode_caps(mx_handle_t handle,
     LTRACEF("handle %u\n", handle);
 
     auto up = ProcessDispatcher::GetCurrent();
-    mxtl::RefPtr<Dispatcher> dispatcher;
-    uint32_t rights;
 
-    if (!up->GetDispatcher(handle, &dispatcher, &rights))
-        return ERR_BAD_HANDLE;
-
-    auto pci_device = dispatcher->get_pci_device_dispatcher();
-    if (!pci_device)
-        return ERR_WRONG_TYPE;
-
-    if (!magenta_rights_check(rights, MX_RIGHT_READ))
-        return ERR_ACCESS_DENIED;
+    mxtl::RefPtr<PciDeviceDispatcher> pci_device;
+    mx_status_t status = up->GetDispatcher(handle, &pci_device, MX_RIGHT_READ);
+    if (status != NO_ERROR)
+        return status;
 
     uint32_t max_irqs;
     status_t result = pci_device->QueryIrqModeCaps(mode, &max_irqs);
@@ -681,18 +644,11 @@ mx_status_t sys_pci_set_irq_mode(mx_handle_t handle,
     LTRACEF("handle %u\n", handle);
 
     auto up = ProcessDispatcher::GetCurrent();
-    mxtl::RefPtr<Dispatcher> dispatcher;
-    uint32_t rights;
 
-    if (!up->GetDispatcher(handle, &dispatcher, &rights))
-        return ERR_BAD_HANDLE;
-
-    auto pci_device = dispatcher->get_pci_device_dispatcher();
-    if (!pci_device)
-        return ERR_WRONG_TYPE;
-
-    if (!magenta_rights_check(rights, MX_RIGHT_WRITE))
-        return ERR_ACCESS_DENIED;
+    mxtl::RefPtr<PciDeviceDispatcher> pci_device;
+    mx_status_t status = up->GetDispatcher(handle, &pci_device, MX_RIGHT_WRITE);
+    if (status != NO_ERROR)
+        return status;
 
     return pci_device->SetIrqMode(mode, requested_irq_count);
 }
@@ -710,26 +666,20 @@ mx_status_t sys_io_mapping_get_info(mx_handle_t handle, void** out_vaddr, uint64
         return ERR_INVALID_ARGS;
 
     auto up = ProcessDispatcher::GetCurrent();
-    mxtl::RefPtr<Dispatcher> dispatcher;
-    uint32_t rights;
 
-    if (!up->GetDispatcher(handle, &dispatcher, &rights))
-        return ERR_BAD_HANDLE;
-
-    auto io_mapping = dispatcher->get_io_mapping_dispatcher();
-    if (!io_mapping || io_mapping->closed())
-        return ERR_WRONG_TYPE;
+    mxtl::RefPtr<IoMappingDispatcher> io_mapping;
+    mx_status_t status = up->GetDispatcher(handle, &io_mapping, MX_RIGHT_READ);
+    if (status != NO_ERROR)
+        return status;
 
     // If we do not have read rights, or we are calling from a different address
     // space than the one that this mapping exists in, refuse to tell the user
     // the vaddr/len of the mapping.
-    if (!magenta_rights_check(rights, MX_RIGHT_READ) ||
-        (ProcessDispatcher::GetCurrent()->aspace() != io_mapping->aspace()))
+    if (ProcessDispatcher::GetCurrent()->aspace() != io_mapping->aspace())
         return ERR_ACCESS_DENIED;
 
     void*    vaddr = reinterpret_cast<void*>(io_mapping->vaddr());
     uint64_t size  = io_mapping->size();
-    status_t status;
 
     status = copy_to_user_unsafe(out_vaddr, &vaddr, sizeof(*out_vaddr));
     if (status != NO_ERROR)
@@ -742,20 +692,30 @@ mx_status_t sys_io_mapping_get_info(mx_handle_t handle, void** out_vaddr, uint64
 #include <arch/x86/descriptor.h>
 #include <arch/x86/ioport.h>
 
-mx_status_t sys_mmap_device_io(uint32_t io_addr, uint32_t len) {
+mx_status_t sys_mmap_device_io(mx_handle_t hrsrc, uint32_t io_addr, uint32_t len) {
+    // TODO: finer grained validation
+    mx_status_t status;
+    if ((status = validate_resource_handle(hrsrc)) < 0) {
+        return status;
+    }
+
     LTRACEF("addr 0x%x len 0x%x\n", io_addr, len);
 
     return x86_set_io_bitmap(io_addr, len, 1);
 }
 #else
-mx_status_t sys_mmap_device_io(uint32_t io_addr, uint32_t len) {
+mx_status_t sys_mmap_device_io(mx_handle_t hrsrc, uint32_t io_addr, uint32_t len) {
     // doesn't make sense on non-x86
     return ERR_NOT_SUPPORTED;
 }
 #endif
 
-uint32_t sys_acpi_uefi_rsdp(void) {
-    // TODO(teisenbe): Use a handle to restrict this to the ACPI process
+uint32_t sys_acpi_uefi_rsdp(mx_handle_t hrsrc) {
+    // TODO: finer grained validation
+    mx_status_t status;
+    if ((status = validate_resource_handle(hrsrc)) < 0) {
+        return status;
+    }
 #if ARCH_X86
     extern uint32_t bootloader_acpi_rsdp;
     return bootloader_acpi_rsdp;
@@ -763,8 +723,12 @@ uint32_t sys_acpi_uefi_rsdp(void) {
     return 0;
 }
 
-mx_status_t sys_acpi_cache_flush(void) {
-    // TODO(teisenbe): Use a handle to restrict this to the ACPI process
+mx_status_t sys_acpi_cache_flush(mx_handle_t hrsrc) {
+    // TODO: finer grained validation
+    mx_status_t status;
+    if ((status = validate_resource_handle(hrsrc)) < 0) {
+        return status;
+    }
     // TODO(teisenbe): This should be restricted to when interrupts are
     // disabled, but we haven't added support for letting the ACPI process
     // disable interrupts yet.  It only uses this for S-state transitions

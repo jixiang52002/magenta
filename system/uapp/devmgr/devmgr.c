@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "acpi.h"
 #include "devmgr.h"
 #include "vfs.h"
 
@@ -14,8 +15,8 @@
 #include <ddk/device.h>
 #include <ddk/driver.h>
 
+#include <magenta/ktrace.h>
 #include <magenta/listnode.h>
-
 #include <magenta/syscalls.h>
 #include <magenta/types.h>
 
@@ -74,6 +75,10 @@ static mx_status_t default_open(mx_device_t* dev, mx_device_t** out, uint32_t fl
     return NO_ERROR;
 }
 
+static mx_status_t default_openat(mx_device_t* dev, mx_device_t** out, const char* path, uint32_t flags) {
+    return ERR_NOT_SUPPORTED;
+}
+
 static mx_status_t default_close(mx_device_t* dev) {
     return NO_ERROR;
 }
@@ -121,6 +126,7 @@ static ssize_t default_ioctl(mx_device_t* dev, uint32_t op,
 static mx_protocol_device_t root_device_proto = {
     .get_protocol = default_get_protocol,
     .open = default_open,
+    .openat = default_openat,
     .close = default_close,
     .release = default_release,
     .read = default_read,
@@ -180,10 +186,6 @@ static mx_status_t devmgr_register_with_protocol(mx_device_t* dev, uint32_t prot
 #endif
 }
 
-static const char* safename(const char* name) {
-    return name ? name : "<noname>";
-}
-
 void dev_ref_release(mx_device_t* dev) {
     dev->refcount--;
     if (dev->refcount == 0) {
@@ -194,11 +196,11 @@ void dev_ref_release(mx_device_t* dev) {
         if (dev->flags & DEV_FLAG_BUSY) {
             // this can happen if creation fails
             // the caller to device_add() will free it
-            printf("device: %p(%s): ref=0, busy, not releasing\n", dev, safename(dev->name));
+            printf("device: %p(%s): ref=0, busy, not releasing\n", dev, dev->name);
             return;
         }
 #if TRACE_ADD_REMOVE
-        printf("device: %p(%s): ref=0. releasing.\n", dev, safename(dev->name));
+        printf("device: %p(%s): ref=0. releasing.\n", dev, dev->name);
 #endif
 
         if (!(dev->flags & DEV_FLAG_VERY_DEAD)) {
@@ -230,7 +232,7 @@ static mx_status_t devmgr_device_probe(mx_device_t* dev, mx_driver_t* drv) {
     mx_status_t status;
 
     xprintf("devmgr: probe dev=%p(%s) drv=%p(%s)\n",
-            dev, safename(dev->name), drv, safename(drv->name));
+            dev, dev->name, drv, drv->name ? drv->name : "<NULL>");
 
     // don't bind to the driver that published this device
     if (drv == dev->driver) {
@@ -292,11 +294,11 @@ static void devmgr_device_probe_all(mx_device_t* dev, bool autobind) {
 
 void devmgr_device_init(mx_device_t* dev, mx_driver_t* driver,
                         const char* name, mx_protocol_device_t* ops) {
-    xprintf("devmgr: init '%s' drv=%p, ops=%p\n", safename(name), driver, ops);
+    xprintf("devmgr: init '%s' drv=%p, ops=%p\n",
+            name ? name : "<NULL>", driver, ops);
 
     memset(dev, 0, sizeof(mx_device_t));
     dev->magic = DEV_MAGIC;
-    dev->name = dev->namedata;
     dev->ops = ops;
     dev->driver = driver;
     list_initialize(&dev->children);
@@ -314,8 +316,8 @@ void devmgr_device_init(mx_device_t* dev, mx_driver_t* driver,
         dev->magic = 0;
     }
 
-    memcpy(dev->namedata, name, len);
-    dev->namedata[len] = 0;
+    memcpy(dev->name, name, len);
+    dev->name[len] = 0;
 }
 
 mx_status_t devmgr_device_create(mx_device_t** out, mx_driver_t* driver,
@@ -351,7 +353,7 @@ mx_status_t devmgr_device_add(mx_device_t* dev, mx_device_t* parent) {
     }
     if (parent == NULL) {
         if (devmgr_is_remote) {
-            //printf("device add: %p(%s): not allowed in devhost\n", dev, safename(dev->name));
+            //printf("device add: %p(%s): not allowed in devhost\n", dev, dev->name);
             return ERR_NOT_SUPPORTED;
         }
         parent = root_dev;
@@ -363,11 +365,11 @@ mx_status_t devmgr_device_add(mx_device_t* dev, mx_device_t* parent) {
     }
 #if TRACE_ADD_REMOVE
     printf("%s: device add: %p(%s) parent=%p(%s)\n", devmgr_is_remote ? "devhost" : "devmgr",
-            dev, safename(dev->name), parent, safename(parent->name));
+            dev, dev->name, parent, parent->name);
 #endif
 
     if (dev->ops == NULL) {
-        printf("device add: %p(%s): NULL ops\n", dev, safename(dev->name));
+        printf("device add: %p(%s): NULL ops\n", dev, dev->name);
         return ERR_INVALID_ARGS;
     }
 
@@ -375,6 +377,7 @@ mx_status_t devmgr_device_add(mx_device_t* dev, mx_device_t* parent) {
     mx_protocol_device_t* ops = dev->ops;
     DEFAULT_IF_NULL(ops, get_protocol)
     DEFAULT_IF_NULL(ops, open);
+    DEFAULT_IF_NULL(ops, openat);
     DEFAULT_IF_NULL(ops, close);
     DEFAULT_IF_NULL(ops, release);
     DEFAULT_IF_NULL(ops, read);
@@ -386,7 +389,7 @@ mx_status_t devmgr_device_add(mx_device_t* dev, mx_device_t* parent) {
     // Don't create an event handle if we alredy have one
     if (dev->event == MX_HANDLE_INVALID && (dev->event = mx_event_create(0)) < 0) {
         printf("device add: %p(%s): cannot create event: %d\n",
-               dev, safename(dev->name), dev->event);
+               dev, dev->name, dev->event);
        return dev->event;
     }
 
@@ -463,13 +466,13 @@ static void devmgr_unbind_children(mx_device_t* dev) {
     mx_device_t* child = NULL;
     mx_device_t* temp = NULL;
 #if TRACE_ADD_REMOVE
-    printf("devmgr_unbind_children: %p(%s)\n", dev, safename(dev->name));
+    printf("devmgr_unbind_children: %p(%s)\n", dev, dev->name);
 #endif
     list_for_every_entry_safe(&dev->children, child, temp, mx_device_t, node) {
         // call child's unbind op
         if (child->ops->unbind) {
 #if TRACE_ADD_REMOVE
-            printf("call unbind child: %p(%s)\n", child, safename(child->name));
+            printf("call unbind child: %p(%s)\n", child, child->name);
 #endif
             DM_UNLOCK();
             child->ops->unbind(child);
@@ -481,11 +484,11 @@ static void devmgr_unbind_children(mx_device_t* dev) {
 mx_status_t devmgr_device_remove(mx_device_t* dev) {
     if (dev->flags & (DEV_FLAG_DEAD | DEV_FLAG_BUSY | DEV_FLAG_INSTANCE)) {
         printf("device: %p(%s): cannot be removed (%s)\n",
-               dev, safename(dev->name), removal_problem(dev->flags));
+               dev, dev->name, removal_problem(dev->flags));
         return ERR_INVALID_ARGS;
     }
 #if TRACE_ADD_REMOVE
-    printf("device: %p(%s): is being removed\n", dev, safename(dev->name));
+    printf("device: %p(%s): is being removed\n", dev, dev->name);
 #endif
     dev->flags |= DEV_FLAG_DEAD;
 
@@ -580,16 +583,20 @@ mx_status_t devmgr_device_rebind(mx_device_t* dev) {
     return NO_ERROR;
 }
 
-mx_status_t devmgr_device_open(mx_device_t* dev, mx_device_t** out, uint32_t flags) {
+mx_status_t devmgr_device_openat(mx_device_t* dev, mx_device_t** out, const char* path, uint32_t flags) {
     if (dev->flags & DEV_FLAG_DEAD) {
-        printf("device open: %p(%s) is dead!\n", dev, safename(dev->name));
+        printf("device open: %p(%s) is dead!\n", dev, dev->name);
         return ERR_BAD_STATE;
     }
     dev_ref_acquire(dev);
     mx_status_t r;
     DM_UNLOCK();
     *out = dev;
-    r = dev->ops->open(dev, out, flags);
+    if (path) {
+        r = dev->ops->openat(dev, out, path, flags);
+    } else {
+        r = dev->ops->open(dev, out, flags);
+    }
     DM_LOCK();
     if (*out != dev) {
         // open created a per-instance device for us
@@ -597,7 +604,7 @@ mx_status_t devmgr_device_open(mx_device_t* dev, mx_device_t** out, uint32_t fla
 
         dev = *out;
         if (!(dev->flags & DEV_FLAG_INSTANCE)) {
-            printf("device open: %p(%s) in bad state %x\n", dev, safename(dev->name), flags);
+            printf("device open: %p(%s) in bad state %x\n", dev, dev->name, flags);
             panic();
         }
     }
@@ -614,7 +621,7 @@ mx_status_t devmgr_device_close(mx_device_t* dev) {
 }
 
 mx_status_t devmgr_driver_add(mx_driver_t* drv) {
-    xprintf("driver add: %p(%s)\n", drv, safename(drv->name));
+    xprintf("driver add: %p(%s)\n", drv, drv->name);
 
     if (drv->ops.init) {
         mx_status_t r;
@@ -793,9 +800,14 @@ void devmgr_dump(void) {
 
 mx_status_t devmgr_control(const char* cmd) {
     if (!strcmp(cmd, "help")) {
-        printf("dump   - dump device tree\n"
-               "lsof   - list open remoteio files and devices\n"
-               "crash  - crash the device manager\n"
+        printf("dump        - dump device tree\n"
+               "lsof        - list open remoteio files and devices\n"
+               "crash       - crash the device manager\n"
+               "poweroff    - poweroff the system\n"
+               "reboot      - reboot the system\n"
+               "kerneldebug - send a command to the kernel\n"
+               "ktraceoff   - stop kernel tracing\n"
+               "ktraceon    - start kernel tracing\n"
                );
         return NO_ERROR;
     }
@@ -810,8 +822,29 @@ mx_status_t devmgr_control(const char* cmd) {
     if (!strcmp(cmd, "crash")) {
         *((int*)0x1234) = 42;
         return NO_ERROR;
-    } else {
+    }
+    if (!strcmp(cmd, "poweroff")) {
+        devmgr_poweroff();
         return ERR_NOT_SUPPORTED;
     }
+    if (!strcmp(cmd, "reboot")) {
+        devmgr_reboot();
+        return ERR_NOT_SUPPORTED;
+    }
+    const char* prefix = "kerneldebug ";
+    if (!strncmp(cmd, prefix, strlen(prefix))) {
+        const char* arg = cmd + strlen(prefix);
+        return mx_debug_send_command(root_resource_handle, arg, strlen(arg));
+    }
+    if (!strcmp(cmd, "ktraceon")) {
+        mx_ktrace_control(root_resource_handle, KTRACE_ACTION_START, GRP_ALL);
+        return NO_ERROR;
+    }
+    if (!strcmp(cmd, "ktraceoff")) {
+        mx_ktrace_control(root_resource_handle, KTRACE_ACTION_STOP, 0);
+        mx_ktrace_control(root_resource_handle, KTRACE_ACTION_REWIND, 0);
+        return NO_ERROR;
+    }
+    return ERR_NOT_SUPPORTED;
 }
 #endif

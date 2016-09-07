@@ -7,11 +7,13 @@
 #include <magenta/message_pipe.h>
 
 #include <err.h>
+#include <new.h>
 #include <stddef.h>
 
 #include <kernel/auto_lock.h>
 
 #include <magenta/handle.h>
+#include <magenta/io_port_dispatcher.h>
 #include <magenta/io_port_client.h>
 #include <magenta/magenta.h>
 
@@ -90,7 +92,7 @@ status_t MessagePipe::Read(size_t side, mxtl::unique_ptr<MessagePacket>* msg) {
 
     if (*msg)
         return NO_ERROR;
-    return other_alive ? ERR_BAD_STATE : ERR_CHANNEL_CLOSED;
+    return other_alive ? ERR_BAD_STATE : ERR_REMOTE_CLOSED;
 }
 
 status_t MessagePipe::Write(size_t side, mxtl::unique_ptr<MessagePacket> msg) {

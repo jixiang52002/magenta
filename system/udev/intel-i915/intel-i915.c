@@ -11,7 +11,6 @@
 
 #include <assert.h>
 #include <magenta/syscalls.h>
-#include <magenta/syscalls-ddk.h>
 #include <magenta/types.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,9 +18,6 @@
 
 #define INTEL_I915_VID (0x8086)
 #define INTEL_I915_BROADWELL_DID (0x1616)
-#define INTEL_I915_SKYLAKE_DID (0x1916)
-#define INTEL_I915_SKYLAKE_DID_2 (0x1926)
-#define INTEL_I915_SKYLAKE_DID_3 (0x191e)
 
 #define INTEL_I915_REG_WINDOW_SIZE (0x1000000u)
 #define INTEL_I915_FB_WINDOW_SIZE (0x10000000u)
@@ -196,7 +192,8 @@ static mx_status_t intel_i915_bind(mx_driver_t* drv, mx_device_t* dev) {
 
     // TODO remove when the gfxconsole moves to user space
     intel_i915_enable_backlight(device, true);
-    mx_set_framebuffer(device->framebuffer, device->framebuffer_size, format, width, height, stride);
+    mx_set_framebuffer(get_root_resource(), device->framebuffer, device->framebuffer_size,
+                       format, width, height, stride);
 
     device->device.protocol_id = MX_PROTOCOL_DISPLAY;
     device->device.protocol_ops = &intel_i915_display_proto;
@@ -214,10 +211,7 @@ fail:
 static mx_bind_inst_t binding[] = {
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_PCI),
     BI_ABORT_IF(NE, BIND_PCI_VID, INTEL_I915_VID),
-    BI_MATCH_IF(EQ, BIND_PCI_DID, INTEL_I915_BROADWELL_DID),
-    BI_MATCH_IF(EQ, BIND_PCI_DID, INTEL_I915_SKYLAKE_DID),
-    BI_MATCH_IF(EQ, BIND_PCI_DID, INTEL_I915_SKYLAKE_DID_2),
-    BI_MATCH_IF(EQ, BIND_PCI_DID, INTEL_I915_SKYLAKE_DID_3),
+    BI_MATCH_IF(EQ, BIND_PCI_CLASS, 0x3), // Display class
 };
 
 mx_driver_t _driver_intel_i915 BUILTIN_DRIVER = {

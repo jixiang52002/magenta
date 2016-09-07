@@ -5,6 +5,7 @@
 #include <runtime/thread.h>
 
 #include <limits.h>
+#include <magenta/stack.h>
 #include <magenta/syscalls.h>
 #include <runtime/mutex.h>
 #include <runtime/tls.h>
@@ -48,7 +49,7 @@ static mx_status_t allocate_thread_page(mxr_thread_t** thread_out) {
 
     const mx_size_t len = sizeof(mxr_thread_t);
 
-    mx_handle_t vmo = mx_vm_object_create(len);
+    mx_handle_t vmo = _mx_vmo_create(len);
     if (vmo < 0)
         return (mx_status_t)vmo;
 
@@ -56,8 +57,9 @@ static mx_status_t allocate_thread_page(mxr_thread_t** thread_out) {
     mx_handle_t self_handle = 0;
     uintptr_t mapping = 0;
     uint32_t flags = MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE;
-    mx_status_t status = mx_process_vm_map(self_handle, vmo, 0, len, &mapping, flags);
-    mx_handle_close(vmo);
+    mx_status_t status = _mx_process_map_vm(self_handle, vmo, 0, len,
+                                            &mapping, flags);
+    _mx_handle_close(vmo);
     if (status != NO_ERROR)
         return status;
     mxr_thread_t* thread = (mxr_thread_t*)mapping;
@@ -73,12 +75,12 @@ static mx_status_t deallocate_thread_page(mxr_thread_t* thread) {
     // TODO(kulakowski) Track process handle.
     mx_handle_t self_handle = 0;
     uintptr_t mapping = (uintptr_t)thread;
-    return mx_process_vm_unmap(self_handle, mapping, 0u);
+    return _mx_process_unmap_vm(self_handle, mapping, 0u);
 }
 
 static mx_status_t thread_cleanup(mxr_thread_t* thread, intptr_t* return_value_out) {
     CHECK_THREAD(thread);
-    mx_status_t status = mx_handle_close(thread->handle);
+    mx_status_t status = _mx_handle_close(thread->handle);
     thread->handle = 0;
     if (status != NO_ERROR)
         return status;
@@ -119,7 +121,7 @@ _Noreturn void mxr_thread_exit(mxr_thread_t* thread, intptr_t return_value) {
         __builtin_trap();
     }
 
-    mx_thread_exit();
+    _mx_thread_exit();
 }
 
 // Local implementation so libruntime does not depend on libc.
@@ -128,27 +130,6 @@ static size_t local_strlen(const char* s) {
     while (*s++ != '\0')
         ++len;
     return len;
-}
-
-// copied from launchpad/stack.h
-// XXX(travisg) put in shared place?
-//
-// Given the (page-aligned) base and size of the stack mapping,
-// compute the appropriate initial SP value for an initial thread
-// according to the C calling convention for the machine.
-static inline uintptr_t sp_from_mapping(mx_vaddr_t base, size_t size) {
-    // Assume stack grows down.
-    mx_vaddr_t sp = base + size;
-#ifdef __x86_64__
-    // The x86-64 ABI requires %rsp % 16 = 8 on entry.  The zero word
-    // at (%rsp) serves as the return address for the outermost frame.
-    sp -= 8;
-#elif defined(__arm__) || defined(__aarch64__)
-    // The ARMv7 and ARMv8 ABIs both just require that SP be aligned.
-#else
-# error what machine?
-#endif
-    return sp;
 }
 
 mx_status_t mxr_thread_create(const char* name, mxr_thread_t** thread_out) {
@@ -163,7 +144,7 @@ mx_status_t mxr_thread_create(const char* name, mxr_thread_t** thread_out) {
     if (name == NULL)
         name = "";
     size_t name_length = local_strlen(name) + 1;
-    mx_handle_t handle = mx_thread_create(self_handle, name, name_length, 0);
+    mx_handle_t handle = _mx_thread_create(self_handle, name, name_length, 0);
     if (handle < 0) {
         deallocate_thread_page(thread);
         return (mx_status_t)handle;
@@ -182,16 +163,16 @@ mx_status_t mxr_thread_start(mxr_thread_t* thread, uintptr_t stack_addr, size_t 
     thread->arg = arg;
 
     // compute the starting address of the stack
-    uintptr_t sp = sp_from_mapping(stack_addr, stack_size);
+    uintptr_t sp = compute_initial_stack_pointer(stack_addr, stack_size);
 
     // kick off the new thread
-    mx_status_t status = mx_thread_start(thread->handle,
-                                         (uintptr_t)thread_trampoline, sp,
-                                         (uintptr_t)thread, 0);
+    mx_status_t status = _mx_thread_start(thread->handle,
+                                          (uintptr_t)thread_trampoline, sp,
+                                          (uintptr_t)thread, 0);
     if (status < 0) {
         mx_handle_t handle = thread->handle;
         deallocate_thread_page(thread);
-        mx_handle_close(handle);
+        _mx_handle_close(handle);
         return status;
     }
 
@@ -209,8 +190,8 @@ mx_status_t mxr_thread_join(mxr_thread_t* thread, intptr_t* return_value_out) {
     case JOINABLE: {
         thread->state = JOINED;
         mxr_mutex_unlock(&thread->state_lock);
-        mx_status_t status = mx_handle_wait_one(thread->handle, MX_SIGNAL_SIGNALED,
-                                                      MX_TIME_INFINITE, NULL);
+        mx_status_t status = _mx_handle_wait_one(
+            thread->handle, MX_SIGNAL_SIGNALED, MX_TIME_INFINITE, NULL);
         if (status != NO_ERROR)
             return status;
         break;
@@ -248,7 +229,7 @@ mx_status_t mxr_thread_detach(mxr_thread_t* thread) {
 
 void mxr_thread_destroy(mxr_thread_t* thread) {
     CHECK_THREAD(thread);
-    mx_handle_close(thread->handle);
+    _mx_handle_close(thread->handle);
     deallocate_thread_page(thread);
 }
 

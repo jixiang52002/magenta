@@ -8,7 +8,6 @@
 
 #include <assert.h>
 #include <magenta/syscalls.h>
-#include <magenta/syscalls-ddk.h>
 #include <magenta/types.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,7 +81,7 @@ static mx_status_t intel_rtc_init(mx_driver_t* drv) {
     // TODO(teisenbe): This should be probed via the ACPI pseudo bus whenever it
     // exists.
 
-    mx_status_t status = mx_mmap_device_io(RTC_IO_BASE, RTC_NUM_IO_REGISTERS);
+    mx_status_t status = mx_mmap_device_io(get_root_resource(), RTC_IO_BASE, RTC_NUM_IO_REGISTERS);
     if (status != NO_ERROR) {
         return status;
     }
