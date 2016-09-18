@@ -127,6 +127,11 @@ mx_status_t usb_set_configuration(mx_device_t* device, int config) {
                        USB_REQ_SET_CONFIGURATION, config, 0, NULL, 0);
 }
 
+mx_status_t usb_set_interface(mx_device_t* device, int interface_number, int alt_setting) {
+    int args[2] = {interface_number, alt_setting};
+    return device->ops->ioctl(device, IOCTL_USB_SET_INTERFACE, args, sizeof(args), NULL, 0);
+}
+
 mx_status_t usb_set_feature(mx_device_t* device, uint8_t request_type, int feature, int index) {
     return usb_control(device, request_type, USB_REQ_SET_FEATURE, feature, index, NULL, 0);
 }
@@ -146,6 +151,7 @@ iotxn_t* usb_alloc_iotxn(uint8_t ep_address, size_t data_size, size_t extra_size
     txn->protocol = MX_PROTOCOL_USB;
 
     usb_protocol_data_t* data = iotxn_pdata(txn, usb_protocol_data_t);
+    memset(data, 0, sizeof(*data));
     data->ep_address = ep_address;
 
     return txn;

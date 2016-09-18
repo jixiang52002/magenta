@@ -13,18 +13,13 @@
 #include <arch/x86/interrupts.h>
 #include <arch/x86/descriptor.h>
 #include <kernel/thread.h>
+#include <platform.h>
 
 #include <lib/user_copy.h>
 
 #if WITH_LIB_MAGENTA
 #include <magenta/exception.h>
 #endif
-
-struct arch_exception_context {
-    bool is_page_fault;
-    x86_iframe_t *frame;
-    uint32_t cr2;
-};
 
 extern enum handler_return platform_irq(x86_iframe_t *frame);
 
@@ -79,10 +74,7 @@ static void exception_die(x86_iframe_t *frame, const char *msg)
     }
 #endif
 
-    for (;;) {
-        x86_cli();
-        x86_hlt();
-    }
+    platform_halt(HALT_ACTION_HALT, HALT_REASON_SW_PANIC);
 }
 
 void x86_syscall_handler(x86_iframe_t *frame)
@@ -323,6 +315,11 @@ void x86_exception_handler(x86_iframe_t *frame)
             apic_issue_eoi();
             break;
         }
+        case X86_INT_IPI_HALT: {
+            x86_ipi_halt_handler();
+            /* no return */
+            break;
+        }
 #endif
         /* pass all other non-Intel defined irq vectors to the platform */
         case X86_INT_PLATFORM_BASE  ... X86_INT_PLATFORM_MAX: {
@@ -342,7 +339,7 @@ void x86_exception_handler(x86_iframe_t *frame)
     }
 
     if (ret != INT_NO_RESCHEDULE)
-        thread_preempt();
+        thread_preempt(true);
 }
 
 __WEAK uint64_t x86_64_syscall(uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4,
@@ -375,8 +372,9 @@ void arch_fill_in_exception_context(const arch_exception_context_t *arch_context
 {
     mx_context->arch_id = ARCH_ID_X86_64;
 
-    // for now do a direct copy of the exception context frame
-    mx_context->arch.u.x86_64 = *(x86_64_exc_frame_t*)arch_context->frame;
+    mx_context->arch.u.x86_64.vector = arch_context->frame->vector;
+    mx_context->arch.u.x86_64.err_code = arch_context->frame->err_code;
+    mx_context->arch.u.x86_64.cr2 = arch_context->cr2;
 }
 
 #endif

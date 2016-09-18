@@ -18,7 +18,7 @@ void* tu_malloc(size_t size)
     void* result = malloc(size);
     if (result == NULL) {
         // TODO(dje): printf may try to malloc too ...
-        unittest_printf("out of memory trying to allocate %zu bytes\n", size);
+        unittest_printf_critical("out of memory trying to allocate %zu bytes\n", size);
         exit(TU_FAIL_ERRCODE);
     }
     return result;
@@ -35,7 +35,7 @@ char* tu_strdup(const char* s)
 void tu_fatal(const char *what, mx_status_t status)
 {
     const char* reason = mx_strstatus(status);
-    unittest_printf("%s failed, rc %d (%s)\n", what, status, reason);
+    unittest_printf_critical("%s failed, rc %d (%s)\n", what, status, reason);
     exit(TU_FAIL_ERRCODE);
 }
 
@@ -44,7 +44,7 @@ void tu_handle_close(mx_handle_t handle)
     mx_status_t status = mx_handle_close(handle);
     // TODO(dje): It's still an open question as to whether errors other than ERR_BAD_HANDLE are "advisory".
     if (status < 0) {
-        tu_fatal(__func__, handle);
+        tu_fatal(__func__, status);
     }
 }
 
@@ -58,9 +58,7 @@ mx_handle_t tu_thread_create(tu_thread_start_func_t entry, void* arg,
     }
 
     uintptr_t stack = 0u;
-    // TODO(kulakowski) Store process self handle.
-    mx_handle_t self_handle = MX_HANDLE_INVALID;
-    mx_status_t status = mx_process_map_vm(self_handle, thread_stack_vmo, 0, stack_size, &stack, MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE);
+    mx_status_t status = mx_process_map_vm(mx_process_self(), thread_stack_vmo, 0, stack_size, &stack, MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE);
     mx_handle_close(thread_stack_vmo);
     if (status < 0) {
         tu_fatal(__func__, status);
@@ -79,6 +77,26 @@ mx_handle_t tu_thread_create(tu_thread_start_func_t entry, void* arg,
 
     // XXX (travisg) leaks a thread structure, and really should return mxr_thread_t
     return mxr_thread_get_handle(thread);
+}
+
+// N.B. This creates a C11 thread.
+// See, e.g., musl/include/threads.h.
+
+void tu_thread_create_c11(thrd_t* t, thrd_start_t entry, void* arg,
+                          const char* name)
+{
+    int ret = thrd_create_with_name(t, entry, arg, name);
+    if (ret != thrd_success) {
+        // tu_fatal takes mx_status_t values.
+        // The translation doesn't have to be perfect.
+        switch (ret) {
+        case thrd_nomem:
+            tu_fatal(__func__, ERR_NO_MEMORY);
+        default:
+            tu_fatal(__func__, ERR_BAD_STATE);
+        }
+        __UNREACHABLE;
+    }
 }
 
 static mx_status_t tu_wait(const mx_handle_t* handles, const mx_signals_t* signals,
@@ -144,7 +162,7 @@ bool tu_wait_readable(mx_handle_t handle)
     return true;
 }
 
-void tu_wait_signalled(mx_handle_t handle)
+void tu_wait_signaled(mx_handle_t handle)
 {
     mx_signals_t signals = MX_SIGNAL_SIGNALED;
     mx_signals_state_t signals_state;
@@ -153,7 +171,7 @@ void tu_wait_signalled(mx_handle_t handle)
     if (result != NO_ERROR)
         tu_fatal(__func__, result);
     if ((signals_state.satisfied & MX_SIGNAL_SIGNALED) == 0) {
-        unittest_printf("%s: unexpected return from tu_wait\n", __func__);
+        unittest_printf_critical("%s: unexpected return from tu_wait\n", __func__);
         exit(TU_FAIL_ERRCODE);
     }
 }
@@ -192,7 +210,7 @@ int tu_process_get_return_code(mx_handle_t process)
         tu_fatal("get process info", ret);
     if (ret != sizeof(info)) {
         // Bleah. Kernel/App mismatch?
-        unittest_printf("%s: unexpected result from mx_object_get_info\n", __func__);
+        unittest_printf_critical("%s: unexpected result from mx_object_get_info\n", __func__);
         exit(TU_FAIL_ERRCODE);
     }
     return info.rec.return_code;
@@ -200,7 +218,7 @@ int tu_process_get_return_code(mx_handle_t process)
 
 int tu_process_wait_exit(mx_handle_t process)
 {
-    tu_wait_signalled(process);
+    tu_wait_signaled(process);
     return tu_process_get_return_code(process);
 }
 

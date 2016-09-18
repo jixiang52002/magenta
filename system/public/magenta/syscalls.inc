@@ -62,7 +62,7 @@ MAGENTA_SYSCALL_DEF(0, 0, 6, unsigned int, num_cpus, void)
 MAGENTA_SYSCALL_DEF(2, 3, 7, mx_handle_t, debug_task_get_child, mx_handle_t handle, uint64_t koid)
 MAGENTA_SYSCALL_DEF(2, 2, 8, mx_handle_t, debug_transfer_handle, mx_handle_t proc, mx_handle_t handle)
 MAGENTA_SYSCALL_DEF(4, 4, 9, mx_ssize_t, debug_read_memory, mx_handle_t proc, uintptr_t vaddr,
-                    mx_size_t len, void* buffer)
+                    mx_size_t len, USER_PTR(void) buffer)
 
 MAGENTA_SYSCALL_DEF(4, 4, 10, mx_ssize_t, ktrace_read, mx_handle_t handle, void* ptr, uint32_t off, uint32_t len)
 MAGENTA_SYSCALL_DEF(3, 3, 11, mx_status_t, ktrace_control, mx_handle_t handle, uint32_t action, uint32_t options)
@@ -107,7 +107,6 @@ MAGENTA_SYSCALL_DEF(6, 6, 62, mx_status_t, msgpipe_write, mx_handle_t handle, US
 // Drivers
 MAGENTA_SYSCALL_DEF(3, 3, 70, mx_handle_t, interrupt_create, mx_handle_t handle, uint32_t vector, uint32_t flags)
 MAGENTA_SYSCALL_DEF(1, 1, 71, mx_status_t, interrupt_complete, mx_handle_t handle)
-MAGENTA_SYSCALL_DEF(1, 1, 72, mx_status_t, interrupt_wait, mx_handle_t handle)
 
 // Processes
 MAGENTA_SYSCALL_DEF(3, 3, 80, mx_handle_t, process_create, USER_PTR(const char) name, uint32_t name_len, uint32_t flags)
@@ -125,6 +124,8 @@ MAGENTA_SYSCALL_DEF(1, 1, 87, mx_status_t, task_kill, mx_handle_t task_handle);
 
 // Synchronization
 MAGENTA_SYSCALL_DEF(1, 1, 90, mx_handle_t, event_create, uint32_t options)
+MAGENTA_SYSCALL_DEF(2, 2, 91, mx_status_t, eventpair_create, USER_PTR(mx_handle_t) out_handles /* [2] */,
+                    uint32_t flags)
 MAGENTA_SYSCALL_DEF(3, 4, 93, mx_status_t, futex_wait, int* value_ptr, int current_value, mx_time_t timeout)
 MAGENTA_SYSCALL_DEF(2, 2, 94, mx_status_t, futex_wake, int* value_ptr, uint32_t count)
 MAGENTA_SYSCALL_DEF(5, 5, 95, mx_status_t, futex_requeue, int* wake_ptr, uint32_t wake_count,
@@ -132,18 +133,20 @@ MAGENTA_SYSCALL_DEF(5, 5, 95, mx_status_t, futex_requeue, int* wake_ptr, uint32_
 
 // Memory management
 MAGENTA_SYSCALL_DEF(1, 2, 100, mx_handle_t, vmo_create, uint64_t size)
-MAGENTA_SYSCALL_DEF(4, 5, 101, mx_ssize_t, vmo_read, mx_handle_t handle, void *data, uint64_t offset,
+MAGENTA_SYSCALL_DEF(4, 5, 101, mx_ssize_t, vmo_read, mx_handle_t handle, USER_PTR(void) data, uint64_t offset,
                     mx_size_t len)
-MAGENTA_SYSCALL_DEF(4, 5, 102, mx_ssize_t, vmo_write, mx_handle_t handle, const void *data,
+MAGENTA_SYSCALL_DEF(4, 5, 102, mx_ssize_t, vmo_write, mx_handle_t handle, USER_PTR(const void) data,
                     uint64_t offset, mx_size_t len)
 MAGENTA_SYSCALL_DEF(2, 4, 103, mx_status_t, vmo_get_size, mx_handle_t handle, USER_PTR(uint64_t) size)
 MAGENTA_SYSCALL_DEF(2, 4, 104, mx_status_t, vmo_set_size, mx_handle_t handle, uint64_t size)
+MAGENTA_SYSCALL_DEF(6, 8, 105, mx_status_t, vmo_op_range, mx_handle_t handle, uint32_t op,
+                    uint64_t offset, uint64_t size, USER_PTR(void) buffer, mx_size_t buffer_size)
 
 // temporary syscalls to access port and memory mapped devices
-MAGENTA_SYSCALL_DEF(3, 3, 105, mx_status_t, mmap_device_io, mx_handle_t handle, uint32_t io_addr, uint32_t len)
-MAGENTA_SYSCALL_DEF(5, 5, 106, mx_status_t, mmap_device_memory, mx_handle_t handle, mx_paddr_t paddr,
+MAGENTA_SYSCALL_DEF(3, 3, 110, mx_status_t, mmap_device_io, mx_handle_t handle, uint32_t io_addr, uint32_t len)
+MAGENTA_SYSCALL_DEF(5, 5, 111, mx_status_t, mmap_device_memory, mx_handle_t handle, mx_paddr_t paddr,
                     uint32_t len, mx_cache_policy_t cache_policy, USER_PTR(void *) out_vaddr)
-MAGENTA_SYSCALL_DEF(4, 4, 107, mx_status_t, alloc_device_memory, mx_handle_t handle, uint32_t len,
+MAGENTA_SYSCALL_DEF(4, 4, 112, mx_status_t, alloc_device_memory, mx_handle_t handle, uint32_t len,
                     mx_paddr_t *out_paddr, void **out_vaddr)
 
 MAGENTA_SYSCALL_DEF(2, 2, 160, mx_ssize_t, cprng_draw, USER_PTR(void) buffer, mx_size_t len);
@@ -170,13 +173,12 @@ MAGENTA_SYSCALL_DEF(5, 5, 185, mx_status_t, pci_io_write, mx_handle_t handle, ui
 MAGENTA_SYSCALL_DEF(5, 5, 186, mx_status_t, pci_io_read, mx_handle_t handle, uint32_t bar_num,
                     uint32_t offset, uint32_t len, uint32_t* out_value)
 MAGENTA_SYSCALL_DEF(2, 2, 187, mx_handle_t, pci_map_interrupt, mx_handle_t handle, int32_t which_irq)
-MAGENTA_SYSCALL_DEF(1, 1, 188, mx_status_t, pci_interrupt_wait, mx_handle_t handle)
-MAGENTA_SYSCALL_DEF(1, 1, 189, mx_handle_t, pci_map_config, mx_handle_t handle)
-MAGENTA_SYSCALL_DEF(4, 4, 190, mx_status_t, pci_query_irq_mode_caps, mx_handle_t handle,
+MAGENTA_SYSCALL_DEF(1, 1, 188, mx_handle_t, pci_map_config, mx_handle_t handle)
+MAGENTA_SYSCALL_DEF(4, 4, 189, mx_status_t, pci_query_irq_mode_caps, mx_handle_t handle,
                     mx_pci_irq_mode_t mode, uint32_t* out_max_irqs)
-MAGENTA_SYSCALL_DEF(4, 4, 191, mx_status_t, pci_set_irq_mode, mx_handle_t handle, mx_pci_irq_mode_t mode,
+MAGENTA_SYSCALL_DEF(4, 4, 190, mx_status_t, pci_set_irq_mode, mx_handle_t handle, mx_pci_irq_mode_t mode,
                     uint32_t requested_irq_count)
-MAGENTA_SYSCALL_DEF(3, 3, 192, mx_status_t, pci_init, mx_handle_t handle, USER_PTR(mx_pci_init_arg_t) init_buf, uint32_t len)
+MAGENTA_SYSCALL_DEF(3, 3, 191, mx_status_t, pci_init, mx_handle_t handle, USER_PTR(mx_pci_init_arg_t) init_buf, uint32_t len)
 
 // I/O mapping objects
 MAGENTA_SYSCALL_DEF(3, 3, 200, mx_status_t, io_mapping_get_info, mx_handle_t handle, void** out_vaddr,
@@ -199,9 +201,9 @@ MAGENTA_SYSCALL_DEF(4, 6, 223, mx_status_t, port_bind, mx_handle_t handle, uint6
 MAGENTA_SYSCALL_DEF(4, 4, 230, mx_handle_t, datapipe_create, uint32_t options, mx_size_t element_size,
                     mx_size_t capacity, mx_handle_t* handle)
 MAGENTA_SYSCALL_DEF(4, 4, 231, mx_ssize_t, datapipe_write, mx_handle_t handle, uint32_t flags,
-                    mx_size_t requested, const void* buffer)
+                    mx_size_t requested, USER_PTR(const void) buffer)
 MAGENTA_SYSCALL_DEF(4, 4, 232, mx_ssize_t, datapipe_read, mx_handle_t handle, uint32_t flags,
-                    mx_size_t requested, void* buffer)
+                    mx_size_t requested, USER_PTR(void) buffer)
 MAGENTA_SYSCALL_DEF(3, 3, 233, mx_ssize_t, datapipe_begin_write, mx_handle_t handle, uint32_t flags,
                     uintptr_t* buffer)
 MAGENTA_SYSCALL_DEF(2, 2, 234, mx_status_t, datapipe_end_write, mx_handle_t handle, mx_size_t written)
@@ -231,9 +233,13 @@ MAGENTA_SYSCALL_DEF(1, 1, 261, mx_status_t, acpi_cache_flush, mx_handle_t handle
 // Sockets
 MAGENTA_SYSCALL_DEF(2, 2, 280, mx_status_t, socket_create, mx_handle_t out_handles[2], uint32_t flags)
 MAGENTA_SYSCALL_DEF(4, 4, 281, mx_ssize_t, socket_write, mx_handle_t handle, uint32_t flags,
-                    mx_size_t size, const void* buffer)
+                    mx_size_t size, USER_PTR(const void) buffer)
 MAGENTA_SYSCALL_DEF(4, 4, 282, mx_ssize_t, socket_read, mx_handle_t handle, uint32_t flags,
-                    mx_size_t size, void* buffer)
+                    mx_size_t size, USER_PTR(void) buffer)
+
+// Debugger calls
+MAGENTA_SYSCALL_DEF(4, 4, 290, mx_status_t, thread_read_state, mx_handle_t handle, uint32_t kind, USER_PTR(void) buffer, USER_PTR(uint32_t) buffer_len)
+MAGENTA_SYSCALL_DEF(4, 4, 291, mx_status_t, thread_write_state, mx_handle_t handle, uint32_t kind, USER_PTR(const void) buffer, uint32_t buffer_len)
 
 // syscall arg passing tests
 MAGENTA_SYSCALL_DEF(0, 0, 20000, int, syscall_test_0, void)

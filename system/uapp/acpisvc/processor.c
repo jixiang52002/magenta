@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #include <acpica/acpi.h>
 #include <acpisvc/protocol.h>
@@ -31,6 +32,8 @@ static mx_status_t cmd_list_children(mx_handle_t h, acpi_handle_ctx_t* ctx, void
 static mx_status_t cmd_get_child_handle(mx_handle_t h, acpi_handle_ctx_t* ctx, void* cmd);
 static mx_status_t cmd_get_pci_init_arg(mx_handle_t h, acpi_handle_ctx_t* ctx, void* cmd);
 static mx_status_t cmd_s_state_transition(mx_handle_t h, acpi_handle_ctx_t* ctx, void* cmd);
+static mx_status_t cmd_ps0(mx_handle_t h, acpi_handle_ctx_t* ctx, void* cmd);
+static mx_status_t cmd_new_connection(mx_handle_t h, acpi_handle_ctx_t* ctx, void* cmd);
 
 typedef mx_status_t (*cmd_handler_t)(mx_handle_t, acpi_handle_ctx_t*, void*);
 static const cmd_handler_t cmd_table[] = {
@@ -38,6 +41,8 @@ static const cmd_handler_t cmd_table[] = {
         [ACPI_CMD_GET_CHILD_HANDLE] = cmd_get_child_handle,
         [ACPI_CMD_GET_PCI_INIT_ARG] = cmd_get_pci_init_arg,
         [ACPI_CMD_S_STATE_TRANSITION] = cmd_s_state_transition,
+        [ACPI_CMD_PS0] = cmd_ps0,
+        [ACPI_CMD_NEW_CONNECTION] = cmd_new_connection,
 };
 
 static mx_status_t send_error(mx_handle_t h, uint32_t req_id, mx_status_t status);
@@ -57,15 +62,16 @@ static mx_status_t dispatch(mx_handle_t h, void* _ctx, void* cookie) {
     mx_status_t status = mx_msgpipe_read(h, NULL, &num_bytes, NULL, &num_handles, 0);
     if (status == ERR_BAD_STATE) {
         return ERR_DISPATCHER_NO_WORK;
-    } else if (status != ERR_NOT_ENOUGH_BUFFER ||
-               num_handles > 0 ||
+    } else if (status != ERR_BUFFER_TOO_SMALL ||
+               num_handles > 1 ||
                num_bytes > ACPI_MAX_REQUEST_SIZE) {
         // Trigger a close on our end
         return status;
     }
 
+    mx_handle_t cmd_handle = 0;
     uint8_t buf[ACPI_MAX_REQUEST_SIZE];
-    status = mx_msgpipe_read(h, buf, &num_bytes, NULL, NULL, 0);
+    status = mx_msgpipe_read(h, buf, &num_bytes, &cmd_handle, &num_handles, 0);
     if (status != NO_ERROR) {
         goto cleanup;
     }
@@ -91,14 +97,38 @@ static mx_status_t dispatch(mx_handle_t h, void* _ctx, void* cookie) {
         status = send_error(h, hdr->request_id, ERR_NOT_SUPPORTED);
         goto cleanup;
     }
+    if (num_handles > 0) {
+        if ((hdr->cmd != ACPI_CMD_NEW_CONNECTION) || (ctx->root_node == false)) {
+            status = ERR_INVALID_ARGS;
+            goto cleanup;
+        }
+        acpi_handle_ctx_t* context = calloc(1, sizeof(acpi_handle_ctx_t));
+        if (context == NULL) {
+            status = ERR_NO_MEMORY;
+            goto cleanup;
+        }
+        context->root_node = true;
+        if ((status = mxio_dispatcher_add(dispatcher, cmd_handle, context, NULL)) < 0) {
+            free(context);
+            goto cleanup;
+        }
+        acpi_rsp_hdr_t rsp;
+        rsp.status = NO_ERROR;
+        rsp.len = sizeof(rsp);
+        rsp.request_id = hdr->request_id;
+        return mx_msgpipe_write(h, &rsp, sizeof(rsp), NULL, 0, 0);
+    }
     status = cmd_table[hdr->cmd](h, ctx, buf);
 
 cleanup:
+    if (cmd_handle > 0) {
+        mx_handle_close(cmd_handle);
+    }
     return status;
 }
 
 // Launch the main event loop
-mx_status_t begin_processing(mx_handle_t acpi_root, mx_handle_t devmgr_signal) {
+mx_status_t begin_processing(mx_handle_t acpi_root) {
     acpi_handle_ctx_t* root_context = calloc(1, sizeof(acpi_handle_ctx_t));
     if (!root_context) {
         return ERR_NO_MEMORY;
@@ -123,9 +153,6 @@ mx_status_t begin_processing(mx_handle_t acpi_root, mx_handle_t devmgr_signal) {
     if (status != NO_ERROR) {
         goto fail;
     }
-
-    // Let devmgr know we're ready
-    mx_handle_close(devmgr_signal);
 
     mxio_dispatcher_run(dispatcher);
     // mxio_dispatcher_run should not return
@@ -424,4 +451,45 @@ static mx_status_t cmd_s_state_transition(mx_handle_t h, acpi_handle_ctx_t* ctx,
         return send_error(h, cmd->hdr.request_id, ERR_NOT_SUPPORTED);
     }
     return send_error(h, cmd->hdr.request_id, ERR_INTERNAL);
+}
+
+static mx_status_t cmd_ps0(mx_handle_t h, acpi_handle_ctx_t* ctx, void* _cmd) {
+    acpi_cmd_ps0_t* cmd = _cmd;
+    if (cmd->hdr.len != sizeof(*cmd)) {
+        return send_error(h, cmd->hdr.request_id, ERR_INVALID_ARGS);
+    }
+
+    if (!ctx->root_node) {
+        return send_error(h, cmd->hdr.request_id, ERR_ACCESS_DENIED);
+    }
+
+    cmd->name[sizeof(cmd->name) - 1] = '\0';
+    ACPI_HANDLE dev;
+    ACPI_STATUS status = AcpiGetHandle(NULL, cmd->name, &dev);
+    if (status != AE_OK) {
+        printf("Failed to find path %s\n", cmd->name);
+        return send_error(h, cmd->hdr.request_id, ERR_NOT_FOUND);
+    }
+
+    status = AcpiEvaluateObject(dev, (char*)"_PS0", NULL, NULL);
+    if (status != AE_OK) {
+        printf("Failed to find object's PS0 method\n");
+        return send_error(h, cmd->hdr.request_id, ERR_NOT_FOUND);
+    }
+
+    acpi_rsp_ps0_t rsp = {
+        .hdr = {
+            .status = NO_ERROR,
+            .len = sizeof(rsp),
+            .request_id = cmd->hdr.request_id,
+        },
+    };
+
+    return mx_msgpipe_write(h, &rsp, sizeof(rsp), NULL, 0, 0);
+}
+
+static mx_status_t cmd_new_connection(mx_handle_t h, acpi_handle_ctx_t* ctx, void* _cmd) {
+    // if a handle was passed with this, as it should be
+    // this command would have been handled without calling this function
+    return ERR_INVALID_ARGS;
 }

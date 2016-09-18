@@ -56,6 +56,32 @@ void dn_delete(dnode_t* dn) {
     free(dn);
 }
 
+// Remove the child dn from its old parent, and add it to a new one
+mx_status_t dn_move_child(dnode_t* parent, dnode_t* child, const char* name, size_t len) {
+    if ((parent == NULL) || (child == NULL)) {
+        printf("dn_move_child(%p,%p) bad args\n", parent, child);
+        panic();
+    }
+    if ((len > DN_NAME_MAX) || (len < 1)) {
+        return ERR_INVALID_ARGS;
+    }
+
+    if (child->parent) {
+        // Remove child from old parent
+        list_delete(&child->dn_entry);
+        child->parent = NULL;
+    }
+
+    // Rename the child
+    memcpy(child->name, name, len);
+    child->name[len] = '\0';
+    child->flags = DN_TYPE(child->flags) | len;
+    // Add child to new parent
+    child->parent = parent;
+    list_add_tail(&parent->children, &child->dn_entry);
+    return NO_ERROR;
+}
+
 void dn_add_child(dnode_t* parent, dnode_t* child) {
     if ((parent == NULL) || (child == NULL)) {
         printf("dn_add_child(%p,%p) bad args\n", parent, child);
@@ -112,7 +138,7 @@ mx_status_t dn_readdir(dnode_t* parent, void* cookie, void* data, size_t len) {
                 search = false;
             }
         } else {
-            uint32_t vtype = ((dn->flags & DN_TYPE_MASK) == DN_TYPE_DIR) ? V_TYPE_DIR : V_TYPE_FILE;
+            uint32_t vtype = (DN_TYPE(dn->flags) == DN_TYPE_DIR) ? V_TYPE_DIR : V_TYPE_FILE;
             r = vfs_fill_dirent((void*)(ptr + pos), len - pos,
                                 dn->name, DN_NAME_LEN(dn->flags),
                                 VTYPE_TO_DTYPE(vtype));

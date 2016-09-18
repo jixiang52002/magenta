@@ -115,6 +115,11 @@ int access(const char* path, int mode) {
     return checkfile(path, 0);
 }
 
+// TODO(kulakowski) No symlinks to ignore yet.
+int lstat(const char* path, struct stat* buf) {
+    return stat(path, buf);
+}
+
 void sync(void) {
 }
 int fsync(int fd) {
@@ -122,10 +127,6 @@ int fsync(int fd) {
 }
 int fdatasync(int fd) {
     return checkfd(fd, 0);
-}
-
-int rename(const char* oldpath, const char* newpath) {
-    return checkfile(oldpath, ENOSYS);
 }
 
 // at the moment our unlink works on all fs objects

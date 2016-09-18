@@ -215,6 +215,17 @@ static int mxc_mkdir(int argc, char** argv) {
     return 0;
 }
 
+static int mxc_mv(int argc, char** argv) {
+    if (argc != 3) {
+        fprintf(stderr, "usage: mv <old path> <new path>\n");
+        return -1;
+    }
+    if (rename(argv[1], argv[2])) {
+        fprintf(stderr, "error: failed to rename '%s' to '%s'\n", argv[1], argv[2]);
+    }
+    return 0;
+}
+
 static int mxc_rm(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: rm <filename>\n");
@@ -265,14 +276,19 @@ static int mxc_runtests(int argc, char** argv) {
         return -1;
     }
 
-    int verbosity = 0;
+    // We want the default to be the same, whether the test is run by us
+    // or run standalone. Do this by leaving the verbosity unspecified unless
+    // provided by the user.
+    int verbosity = -1;
 
     if (argc > 1) {
-        if (strcmp(argv[1], "-v") == 0) {
+        if (strcmp(argv[1], "-q") == 0) {
+            verbosity = 0;
+        } else if (strcmp(argv[1], "-v") == 0) {
             printf("verbose output. enjoy.\n");
             verbosity = 1;
         } else {
-            printf("unknown option. usage: %s [-v]\n", argv[0]);
+            printf("unknown option. usage: %s [-q|-v]\n", argv[0]);
             return -1;
         }
     }
@@ -294,10 +310,11 @@ static int mxc_runtests(int argc, char** argv) {
                 de->d_name);
         }
 
-        char opts[] = {'v','=', verbosity + '0', 0};
+        char verbose_opt[] = {'v','=', verbosity + '0', 0};
+        const char* argv[] = {name, verbose_opt};
+        int argc = verbosity >= 0 ? 2 : 1;
 
-        const char* argv[] = {name, opts};
-        mx_handle_t handle = launchpad_launch_mxio(name, 2, argv);
+        mx_handle_t handle = launchpad_launch_mxio(name, argc, argv);
         if (handle < 0) {
             printf("FAILURE: Failed to launch %s: %d\n", de->d_name, handle);
             mxc_fail_test(&failures, de->d_name, FAILED_TO_LAUNCH, 0);
@@ -397,6 +414,7 @@ builtin_t builtins[] = {
     {"list", mxc_list, "display a text file with line numbers"},
     {"ls", mxc_ls, "list directory contents"},
     {"mkdir", mxc_mkdir, "create a directory" },
+    {"mv", mxc_mv, "rename a file or directory" },
     {"rm", mxc_rm, "delete a file"},
     {"runtests", mxc_runtests, "run all test programs"},
     {"msleep", mxc_msleep, "pause for milliseconds"},

@@ -34,18 +34,24 @@ status_t MessagePipeDispatcher::Create(uint32_t flags,
     LTRACE_ENTRY;
 
     AllocChecker ac;
-    mxtl::RefPtr<MessagePipe> pipe = mxtl::AdoptRef(new (&ac) MessagePipe(GenerateKernelObjectId()));
+    mxtl::RefPtr<MessagePipe> pipe = mxtl::AdoptRef(new (&ac) MessagePipe());
     if (!ac.check()) return ERR_NO_MEMORY;
 
-    Dispatcher* msgp0 = new (&ac) MessagePipeDispatcher((flags & ~MX_FLAG_REPLY_PIPE), 0u, pipe);
+    auto msgp0 = new (&ac) MessagePipeDispatcher((flags & ~MX_FLAG_REPLY_PIPE), 0u, pipe);
     if (!ac.check()) return ERR_NO_MEMORY;
 
-    Dispatcher* msgp1 = new (&ac) MessagePipeDispatcher(flags, 1u, pipe);
-    if (!ac.check()) return ERR_NO_MEMORY;
+    auto msgp1 = new (&ac) MessagePipeDispatcher(flags, 1u, pipe);
+    if (!ac.check()) {
+        delete msgp0;
+        return ERR_NO_MEMORY;
+    }
+
+    msgp0->set_inner_koid(msgp1->get_koid());
+    msgp1->set_inner_koid(msgp0->get_koid());
 
     *rights = kDefaultPipeRights;
-    *dispatcher0 = mxtl::AdoptRef(msgp0);
-    *dispatcher1 = mxtl::AdoptRef(msgp1);
+    *dispatcher0 = mxtl::AdoptRef<Dispatcher>(msgp0);
+    *dispatcher1 = mxtl::AdoptRef<Dispatcher>(msgp1);
     return NO_ERROR;
 }
 
@@ -105,8 +111,7 @@ status_t MessagePipeDispatcher::Write(mxtl::Array<uint8_t> data, mxtl::Array<Han
     return pipe_->Write(side_, mxtl::move(msg));
 }
 
-status_t MessagePipeDispatcher::SetIOPort(mxtl::RefPtr<IOPortDispatcher> io_port,
-                                          uint64_t key, mx_signals_t signals) {
+status_t MessagePipeDispatcher::set_port_client(mxtl::unique_ptr<IOPortClient> client) {
     LTRACE_ENTRY;
-    return pipe_->SetIOPort(side_, mxtl::move(io_port), key, signals);
+    return pipe_->SetIOPort(side_, mxtl::move(client));
 }

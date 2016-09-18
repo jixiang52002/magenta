@@ -69,6 +69,8 @@ static thread_t _idle_thread;
 static void thread_resched(void);
 static int idle_thread_routine(void *) __NO_RETURN;
 static void thread_exit_locked(thread_t *current_thread, int retcode) __NO_RETURN;
+static void thread_block(void);
+static void thread_unblock(thread_t *t, bool resched);
 
 #if PLATFORM_HAS_DYNAMIC_TIMER
 /* preemption timer */
@@ -325,7 +327,7 @@ status_t thread_join(thread_t *t, int *retcode, lk_time_t timeout)
     if (t->flags & THREAD_FLAG_DETACHED) {
         /* the thread is detached, go ahead and exit */
         THREAD_UNLOCK(state);
-        return ERR_THREAD_DETACHED;
+        return ERR_BAD_STATE;
     }
 
     /* wait for the thread to die */
@@ -372,7 +374,7 @@ status_t thread_detach(thread_t *t)
 
     /* if another thread is blocked inside thread_join() on this thread,
      * wake them up with a specific return code */
-    wait_queue_wake_all(&t->retcode_wait_queue, false, ERR_THREAD_DETACHED);
+    wait_queue_wake_all(&t->retcode_wait_queue, false, ERR_BAD_STATE);
 
     /* if it's already dead, then just do what join would have and exit */
     if (t->state == THREAD_DEATH) {
@@ -608,7 +610,7 @@ static thread_t *get_top_thread(int cpu)
  * This is probably not the function you're looking for. See
  * thread_yield() instead.
  */
-void thread_resched(void)
+static void thread_resched(void)
 {
     thread_t *oldthread;
     thread_t *newthread;
@@ -777,10 +779,7 @@ void thread_yield(void)
 }
 
 /**
- * @brief  Briefly yield cpu to another thread
- *
- * This function is similar to thread_yield(), except that it will
- * restart more quickly.
+ * @brief Preempt the current thread, usually from an interrupt
  *
  * This function places the current thread at the head of the run
  * queue and then yields the cpu to another thread.
@@ -790,8 +789,12 @@ void thread_yield(void)
  *
  * This function will return at some later time. Possibly immediately if
  * no other threads are waiting to execute.
+ *
+ * @param interrupt for tracing purposes set if the preemption is happening
+ * at interrupt context.
+ *
  */
-void thread_preempt(void)
+void thread_preempt(bool interrupt)
 {
     thread_t *current_thread = get_current_thread();
 
@@ -799,8 +802,14 @@ void thread_preempt(void)
     DEBUG_ASSERT(current_thread->state == THREAD_RUNNING);
 
 #if THREAD_STATS
-    if (!thread_is_idle(current_thread))
-        THREAD_STATS_INC(preempts); /* only track when a meaningful preempt happens */
+    if (!thread_is_idle(current_thread)) {
+        /* only track when a meaningful preempt happens */
+        if (interrupt) {
+            THREAD_STATS_INC(irq_preempts);
+        } else {
+            THREAD_STATS_INC(preempts);
+        }
+    }
 #endif
 
     KEVLOG_THREAD_PREEMPT(current_thread);
@@ -830,7 +839,7 @@ void thread_preempt(void)
  * from other modules, such as mutex, which will presumably set the thread's
  * state to blocked and add it to some queue or another.
  */
-void thread_block(void)
+static void thread_block(void)
 {
     __UNUSED thread_t *current_thread = get_current_thread();
 
@@ -843,7 +852,7 @@ void thread_block(void)
     thread_resched();
 }
 
-void thread_unblock(thread_t *t, bool resched)
+static void thread_unblock(thread_t *t, bool resched)
 {
     DEBUG_ASSERT(t->magic == THREAD_MAGIC);
     DEBUG_ASSERT(t->state == THREAD_BLOCKED);
@@ -905,7 +914,7 @@ static enum handler_return thread_sleep_handler(timer_t *timer, lk_time_t now, v
  * other threads are running.  When the timer expires, this thread will
  * be placed at the head of the run queue.
  *
- * interruptable argument allows this routine to return early if the thread was signalled
+ * interruptable argument allows this routine to return early if the thread was signaled
  * for something.
  */
 status_t thread_sleep_etc(lk_time_t delay, bool interruptable)
@@ -1420,8 +1429,9 @@ void wait_queue_destroy(wait_queue_t *wait, bool reschedule)
     DEBUG_ASSERT(wait->magic == WAIT_QUEUE_MAGIC);
     DEBUG_ASSERT(arch_ints_disabled());
     DEBUG_ASSERT(spin_lock_held(&thread_lock));
+    DEBUG_ASSERT(list_is_empty(&wait->list));
 
-    wait_queue_wake_all(wait, reschedule, ERR_CANCELLED);
+    wait_queue_wake_all(wait, reschedule, ERR_INTERNAL);
     wait->magic = 0;
 }
 
@@ -1435,7 +1445,7 @@ void wait_queue_destroy(wait_queue_t *wait, bool reschedule)
  * @param wait_queue_error  The return value which the new thread will receive
  *   from wait_queue_block().
  *
- * @return ERR_NOT_BLOCKED if thread was not in any wait queue.
+ * @return ERR_BAD_STATE if thread was not in any wait queue.
  */
 status_t thread_unblock_from_wait_queue(thread_t *t, status_t wait_queue_error)
 {
@@ -1444,7 +1454,7 @@ status_t thread_unblock_from_wait_queue(thread_t *t, status_t wait_queue_error)
     DEBUG_ASSERT(spin_lock_held(&thread_lock));
 
     if (t->state != THREAD_BLOCKED)
-        return ERR_NOT_BLOCKED;
+        return ERR_BAD_STATE;
 
     DEBUG_ASSERT(t->blocking_wait_queue != NULL);
     DEBUG_ASSERT(t->blocking_wait_queue->magic == WAIT_QUEUE_MAGIC);

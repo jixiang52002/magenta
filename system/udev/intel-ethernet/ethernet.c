@@ -33,6 +33,7 @@ struct ethernet_device {
     mx_device_t* pcidev;
     mx_handle_t ioh;
     mx_handle_t irqh;
+    bool edge_triggered_irq;
     thrd_t thread;
 };
 
@@ -42,15 +43,23 @@ static int irq_thread(void* arg) {
     ethernet_device_t* edev = arg;
     for (;;) {
         mx_status_t r;
-        if ((r = mx_pci_interrupt_wait(edev->irqh)) < 0) {
+        if ((r = mx_handle_wait_one(edev->irqh, MX_SIGNAL_SIGNALED, MX_TIME_INFINITE, NULL)) < 0) {
             printf("eth: irq wait failed? %d\n", r);
+            mx_interrupt_complete(edev->irqh);
             break;
         }
+
+        if (edev->edge_triggered_irq)
+            mx_interrupt_complete(edev->irqh);
+
         mtx_lock(&edev->lock);
         if (eth_handle_irq(&edev->eth) & ETH_IRQ_RX) {
             device_state_set(&edev->dev, DEV_STATE_READABLE);
         }
         mtx_unlock(&edev->lock);
+
+        if (!edev->edge_triggered_irq)
+            mx_interrupt_complete(edev->irqh);
     }
     return 0;
 }
@@ -110,7 +119,7 @@ static ssize_t eth_read(mx_device_t* dev, void* data, size_t len, mx_off_t off) 
         return len;
     }
     if (len < eth_get_mtu(dev)) {
-        return ERR_NOT_ENOUGH_BUFFER;
+        return ERR_BUFFER_TOO_SMALL;
     }
     return eth_recv(dev, data, len);
 }
@@ -161,8 +170,12 @@ static mx_status_t eth_bind(mx_driver_t* drv, mx_device_t* dev) {
             goto fail;
         } else {
             printf("eth: using legacy irq mode\n");
+            edev->edge_triggered_irq = false;
         }
+    } else {
+        edev->edge_triggered_irq = true;
     }
+
     if ((edev->irqh = pci->map_interrupt(dev, 0)) < 0) {
         printf("eth: failed to map irq\n");
         goto fail;

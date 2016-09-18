@@ -36,11 +36,8 @@ struct MessagePacket : public mxtl::DoublyLinkedListable<mxtl::unique_ptr<Messag
 
 class MessagePipe : public mxtl::RefCounted<MessagePipe> {
 public:
-    using MessageList = mxtl::DoublyLinkedList<mxtl::unique_ptr<MessagePacket>>;
-    MessagePipe(mx_koid_t koid);
+    MessagePipe();
     ~MessagePipe();
-
-    mx_koid_t get_koid() const { return koid_; }
 
     void OnDispatcherDestruction(size_t side);
 
@@ -48,15 +45,14 @@ public:
     status_t Write(size_t side, mxtl::unique_ptr<MessagePacket> msg);
 
     StateTracker* GetStateTracker(size_t side);
-    status_t SetIOPort(size_t side, mxtl::RefPtr<IOPortDispatcher> io_port,
-                       uint64_t key, mx_signals_t signals);
+    status_t SetIOPort(size_t side, mxtl::unique_ptr<IOPortClient> client);
 
 private:
-    const mx_koid_t koid_;
+    using MessageList = mxtl::DoublyLinkedList<mxtl::unique_ptr<MessagePacket>>;
 
     Mutex lock_;
     bool dispatcher_alive_[2];
     MessageList messages_[2];
-    StateTracker state_tracker_[2];
+    NonIrqStateTracker state_tracker_[2];
     mxtl::unique_ptr<IOPortClient> iopc_[2];
 };

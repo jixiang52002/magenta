@@ -5,6 +5,7 @@
 #pragma once
 
 #include <magenta/compiler.h>
+#include <magenta/device/device.h>
 #include <magenta/syscalls.h>
 #include <magenta/types.h>
 #include <ddk/iotxn.h>
@@ -34,8 +35,7 @@ struct mx_device {
     uint32_t refcount;
 
     mx_handle_t event;
-    mx_handle_t remote;
-    uintptr_t remote_id;
+    mx_handle_t rpc;
 
     // most devices implement a single
     // protocol beyond the base device protocol
@@ -61,12 +61,12 @@ struct mx_device {
     // for list of all unmatched devices, if not bound
     // TODO: use this for general lifecycle tracking
 
-    vnode_t* vnode;
-    // used by devmgr internals
-
     mx_device_prop_t* props;
     uint32_t prop_count;
     // properties for driver binding
+
+    void* ctx;
+    // internal use
 
     char name[MX_DEVICE_NAME_MAX + 1];
 };
@@ -142,11 +142,10 @@ static inline mx_status_t device_get_protocol(mx_device_t* dev, uint32_t proto_i
 }
 
 // State change functions
-// Used by driver to indicate if there's data available to read,
-// or room to write, or an error condition.
-#define DEV_STATE_READABLE MX_SIGNAL_SIGNAL0
-#define DEV_STATE_WRITABLE MX_SIGNAL_SIGNAL1
-#define DEV_STATE_ERROR MX_SIGNAL_SIGNAL2
+
+#define DEV_STATE_READABLE DEVICE_SIGNAL_READABLE
+#define DEV_STATE_WRITABLE DEVICE_SIGNAL_WRITABLE
+#define DEV_STATE_ERROR DEVICE_SIGNAL_ERROR
 
 static inline void device_state_set(mx_device_t* dev, mx_signals_t stateflag) {
     mx_object_signal(dev->event, 0, stateflag);

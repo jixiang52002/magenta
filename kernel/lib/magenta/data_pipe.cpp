@@ -20,6 +20,8 @@
 #include <magenta/handle.h>
 #include <magenta/magenta.h>
 
+#include <mxtl/algorithm.h>
+
 const auto kDP_Map_Perms = ARCH_MMU_FLAG_PERM_READ | ARCH_MMU_FLAG_PERM_WRITE | ARCH_MMU_FLAG_PERM_USER;
 const auto kDP_Map_Perms_RO = kDP_Map_Perms | ARCH_MMU_FLAG_PERM_READ;
 
@@ -53,11 +55,15 @@ mx_status_t DataPipe::Create(mx_size_t element_size,
 DataPipe::DataPipe(mx_size_t element_size, mx_size_t capacity)
     : element_size_(element_size),
       capacity_(capacity),
-      free_space_(0u) {
+      free_space_(0u),
+      write_threshold_(0u),
+      read_threshold_(0u) {
     producer_.state_tracker.set_initial_signals_state(
-        mx_signals_state_t{MX_SIGNAL_WRITABLE, MX_SIGNAL_WRITABLE | MX_SIGNAL_PEER_CLOSED});
+        mx_signals_state_t{MX_SIGNAL_WRITABLE | MX_SIGNAL_WRITE_THRESHOLD,
+                           MX_SIGNAL_WRITABLE | MX_SIGNAL_PEER_CLOSED | MX_SIGNAL_WRITE_THRESHOLD});
     consumer_.state_tracker.set_initial_signals_state(
-        mx_signals_state_t{0u, MX_SIGNAL_READABLE | MX_SIGNAL_PEER_CLOSED});
+        mx_signals_state_t{0u,
+                           MX_SIGNAL_READABLE | MX_SIGNAL_PEER_CLOSED | MX_SIGNAL_READ_THRESHOLD});
 
     consumer_.read_only = true;
 }
@@ -79,11 +85,6 @@ bool DataPipe::Init() {
 
     free_space_ = capacity_;
     return true;
-}
-
-mx_size_t DataPipe::ComputeSize(mx_size_t from, mx_size_t to, mx_size_t requested) const {
-    mx_size_t available = (from >= to) ? capacity_ - from : to - from;
-    return available >= requested ? requested : available;
 }
 
 mx_status_t DataPipe::MapVMOIfNeededNoLock(EndPoint* ep, mxtl::RefPtr<VmAspace> aspace) {
@@ -109,27 +110,49 @@ mx_status_t DataPipe::MapVMOIfNeededNoLock(EndPoint* ep, mxtl::RefPtr<VmAspace> 
 }
 
 void DataPipe::UpdateSignalsNoLock() {
-    // TODO(vtl): Should be non-writable during a two-phase write and non-readable during a
-    // two-phase read.
-    if (free_space_ == 0u) {
-        producer_.state_tracker.UpdateSatisfied(MX_SIGNAL_WRITABLE, 0u);
-        consumer_.state_tracker.UpdateSatisfied(0u, MX_SIGNAL_READABLE);
-    } else if (free_space_ == capacity_) {
-        producer_.state_tracker.UpdateSatisfied(0u, MX_SIGNAL_WRITABLE);
-        consumer_.state_tracker.UpdateState(MX_SIGNAL_READABLE, 0u,
-                                            producer_.alive ? 0u : MX_SIGNAL_READABLE, 0u);
+    UpdateProducerSignalsNoLock();
+    UpdateConsumerSignalsNoLock();
+}
+
+void DataPipe::UpdateProducerSignalsNoLock() {
+    // TODO(vtl): Should be non-writable during a two-phase write.
+    if (consumer_.alive) {
+        mx_signals_t satisfied = (free_space_no_lock() > 0u) ? MX_SIGNAL_WRITABLE : 0u;
+        if (free_space_no_lock() >= write_threshold_no_lock())
+            satisfied |= MX_SIGNAL_WRITE_THRESHOLD;
+        producer_.state_tracker.UpdateSatisfied(MX_SIGNAL_WRITABLE | MX_SIGNAL_WRITE_THRESHOLD,
+                                                satisfied);
     } else {
-        producer_.state_tracker.UpdateSatisfied(0u, MX_SIGNAL_WRITABLE);
-        consumer_.state_tracker.UpdateSatisfied(0u, MX_SIGNAL_READABLE);
+        producer_.state_tracker.UpdateState(
+                MX_SIGNAL_WRITABLE | MX_SIGNAL_WRITE_THRESHOLD, MX_SIGNAL_PEER_CLOSED,
+                MX_SIGNAL_WRITABLE | MX_SIGNAL_WRITE_THRESHOLD, MX_SIGNAL_PEER_CLOSED);
     }
 }
 
-mx_status_t DataPipe::ProducerWriteFromUser(const void* ptr, mx_size_t* requested) {
+void DataPipe::UpdateConsumerSignalsNoLock() {
+    // TODO(vtl): Should be non-readable during a two-phase read.
+    mx_signals_t satisfied = (available_size_no_lock() > 0u) ? MX_SIGNAL_READABLE : 0u;
+    if (available_size_no_lock() >= read_threshold_no_lock())
+        satisfied |= MX_SIGNAL_READ_THRESHOLD;
+    if (producer_.alive) {
+        consumer_.state_tracker.UpdateSatisfied(MX_SIGNAL_READABLE | MX_SIGNAL_READ_THRESHOLD,
+                                                satisfied);
+    } else {
+        satisfied |= MX_SIGNAL_PEER_CLOSED;
+        consumer_.state_tracker.UpdateState(
+                MX_SIGNAL_READABLE | MX_SIGNAL_PEER_CLOSED | MX_SIGNAL_READ_THRESHOLD, satisfied,
+                MX_SIGNAL_READABLE | MX_SIGNAL_PEER_CLOSED | MX_SIGNAL_READ_THRESHOLD, satisfied);
+    }
+}
+
+mx_status_t DataPipe::ProducerWriteFromUser(user_ptr<const void> ptr,
+                                            mx_size_t* requested,
+                                            bool all_or_none) {
     AutoLock al(&lock_);
 
     // |expected| > 0 means there is a pending ProducerWriteBegin().
     if (producer_.expected)
-        return ERR_BUSY;
+        return ERR_ALREADY_BOUND;
 
     if (*requested % element_size_ != 0u)
         return ERR_INVALID_ARGS;
@@ -143,24 +166,37 @@ mx_status_t DataPipe::ProducerWriteFromUser(const void* ptr, mx_size_t* requeste
     if (free_space_ == 0u)
         return ERR_SHOULD_WAIT;
 
-    *requested = ComputeSize(producer_.cursor, consumer_.cursor, *requested);
-    DEBUG_ASSERT(*requested % element_size_ == 0u);
+    mx_size_t to_write = mxtl::min(*requested, free_space_no_lock());
+    DEBUG_ASSERT(to_write % element_size_ == 0u);
+    // TODO(vtl): Change OUT_OF_RANGE to SHOULD_WAIT when we have write thresholds (also update mojo
+    // to match).
+    if (all_or_none && to_write != *requested)
+        return ERR_OUT_OF_RANGE;
+    *requested = to_write;
 
     if (!ptr)
         return ERR_INVALID_ARGS;
 
+    mx_size_t to_write_first = mxtl::min(to_write, contiguous_free_space_no_lock());
     size_t written;
-    status_t status = vmo_->WriteUser(ptr, producer_.cursor, *requested, &written);
+    status_t status = vmo_->WriteUser(ptr, producer_.cursor, to_write_first, &written);
     if (status < 0)
         return status;
+    DEBUG_ASSERT(written == to_write_first);
 
-    *requested = written;
+    if (to_write_first < to_write) {
+        auto ptr2 = ptr + to_write_first;
+        DEBUG_ASSERT(ptr2.is_user_address());
+        status = vmo_->WriteUser(ptr2, 0u, to_write - to_write_first, &written);
+        if (status < 0)
+            return status;
+        DEBUG_ASSERT(written == to_write - to_write_first);
+    }
 
-    free_space_ -= written;
-    producer_.cursor += written;
-
-    if (producer_.cursor == capacity_)
-        producer_.cursor = 0u;
+    DEBUG_ASSERT(free_space_ >= to_write);
+    free_space_ -= to_write;
+    // TODO(vtl): This may overflow if mx_size_t is ever 32-bit?
+    producer_.cursor = (producer_.cursor + to_write) % capacity_;
 
     UpdateSignalsNoLock();
 
@@ -172,7 +208,7 @@ mx_ssize_t DataPipe::ProducerWriteBegin(mxtl::RefPtr<VmAspace> aspace, void** pt
 
     // |expected| > 0 means there is a pending ProducerWriteBegin().
     if (producer_.expected)
-        return ERR_BUSY;
+        return ERR_ALREADY_BOUND;
 
     if (!consumer_.alive)
         return ERR_REMOTE_CLOSED;
@@ -184,7 +220,7 @@ mx_ssize_t DataPipe::ProducerWriteBegin(mxtl::RefPtr<VmAspace> aspace, void** pt
     if (status < 0)
         return status;
 
-    producer_.expected = ComputeSize(producer_.cursor, consumer_.cursor, capacity_);
+    producer_.expected = contiguous_free_space_no_lock();
     DEBUG_ASSERT(producer_.expected > 0u);
     DEBUG_ASSERT(producer_.expected % element_size_ == 0u);
 
@@ -217,7 +253,22 @@ mx_status_t DataPipe::ProducerWriteEnd(mx_size_t written) {
     return NO_ERROR;
 }
 
-mx_status_t DataPipe::ConsumerReadFromUser(void* ptr,
+mx_size_t DataPipe::ProducerGetWriteThreshold() {
+    AutoLock al(&lock_);
+    return write_threshold_;
+}
+
+mx_status_t DataPipe::ProducerSetWriteThreshold(mx_size_t threshold) {
+    if (threshold > capacity_ || threshold % element_size_ != 0u)
+        return ERR_INVALID_ARGS;
+
+    AutoLock al(&lock_);
+    write_threshold_ = threshold;
+    UpdateProducerSignalsNoLock();
+    return NO_ERROR;
+}
+
+mx_status_t DataPipe::ConsumerReadFromUser(user_ptr<void> ptr,
                                            mx_size_t* requested,
                                            bool all_or_none,
                                            bool discard,
@@ -228,7 +279,7 @@ mx_status_t DataPipe::ConsumerReadFromUser(void* ptr,
 
     // |expected| > 0 means there is a pending ConsumerReadBegin().
     if (consumer_.expected)
-        return ERR_BUSY;
+        return ERR_ALREADY_BOUND;
 
     if (*requested % element_size_ != 0u)
         return ERR_INVALID_ARGS;
@@ -239,30 +290,42 @@ mx_status_t DataPipe::ConsumerReadFromUser(void* ptr,
     if (free_space_ == capacity_)
         return producer_.alive ? ERR_SHOULD_WAIT : ERR_REMOTE_CLOSED;
 
-    mx_size_t available = ComputeSize(consumer_.cursor, producer_.cursor, *requested);
-    DEBUG_ASSERT(available % element_size_ == 0u);
-    if (all_or_none && available != *requested)
+    mx_size_t to_read = mxtl::min(*requested, available_size_no_lock());
+    DEBUG_ASSERT(to_read % element_size_ == 0u);
+    // TODO(vtl): Change OUT_OF_RANGE to SHOULD_WAIT when we have write thresholds (also update mojo
+    // to match).
+    if (all_or_none && to_read != *requested)
         return producer_.alive ? ERR_OUT_OF_RANGE : ERR_REMOTE_CLOSED;
-    *requested = available;
+    *requested = to_read;
 
     if (!discard) {
         if (!ptr)
             return ERR_INVALID_ARGS;
 
+        mx_size_t to_read_first = mxtl::min(to_read, contiguous_available_size_no_lock());
         size_t read;
-        status_t st = vmo_->ReadUser(ptr, consumer_.cursor, *requested, &read);
+        status_t st = vmo_->ReadUser(ptr, consumer_.cursor, to_read_first, &read);
         if (st != NO_ERROR)
             return st;
-        DEBUG_ASSERT(read == *requested);
+        DEBUG_ASSERT(read == to_read_first);
+
+        if (to_read > to_read_first) {
+            auto ptr2 = ptr + to_read_first;
+            DEBUG_ASSERT(ptr2.is_user_address());
+            status_t st = vmo_->ReadUser(ptr2, 0u, to_read - to_read_first, &read);
+            if (st != NO_ERROR)
+                return st;
+            DEBUG_ASSERT(read == to_read - to_read_first);
+        }
+
         if (peek)
             return NO_ERROR;
     }
 
-    free_space_ += *requested;
-    consumer_.cursor += *requested;
-
-    if (consumer_.cursor == capacity_)
-        consumer_.cursor = 0u;
+    free_space_ += to_read;
+    DEBUG_ASSERT(free_space_ <= capacity_);
+    // TODO(vtl): This may overflow if mx_size_t is ever 32-bit?
+    consumer_.cursor = (consumer_.cursor + to_read) % capacity_;
 
     UpdateSignalsNoLock();
 
@@ -274,12 +337,12 @@ mx_ssize_t DataPipe::ConsumerQuery() {
 
     // |expected| > 0 means there is a pending ConsumerReadBegin().
     if (consumer_.expected)
-        return ERR_BUSY;
+        return ERR_ALREADY_BOUND;
 
     if (free_space_ == capacity_)
         return 0;
 
-    mx_size_t available = ComputeSize(consumer_.cursor, producer_.cursor, capacity_);
+    mx_size_t available = available_size_no_lock();
     DEBUG_ASSERT(available % element_size_ == 0u);
     return static_cast<mx_ssize_t>(available);
 }
@@ -289,7 +352,7 @@ mx_ssize_t DataPipe::ConsumerReadBegin(mxtl::RefPtr<VmAspace> aspace, void** ptr
 
     // |expected| > 0 means there is a pending ConsumerReadBegin().
     if (consumer_.expected)
-        return ERR_BUSY;
+        return ERR_ALREADY_BOUND;
 
     if (free_space_ == capacity_)
         return producer_.alive ? ERR_SHOULD_WAIT : ERR_REMOTE_CLOSED;
@@ -298,7 +361,7 @@ mx_ssize_t DataPipe::ConsumerReadBegin(mxtl::RefPtr<VmAspace> aspace, void** ptr
     if (status < 0)
         return status;
 
-    consumer_.expected = ComputeSize(consumer_.cursor, producer_.cursor, capacity_);
+    consumer_.expected = contiguous_available_size_no_lock();
     DEBUG_ASSERT(consumer_.expected > 0u);
     DEBUG_ASSERT(consumer_.expected % element_size_ == 0u);
 
@@ -331,6 +394,21 @@ mx_status_t DataPipe::ConsumerReadEnd(mx_size_t read) {
     return NO_ERROR;
 }
 
+mx_size_t DataPipe::ConsumerGetReadThreshold() {
+    AutoLock al(&lock_);
+    return read_threshold_;
+}
+
+mx_status_t DataPipe::ConsumerSetReadThreshold(mx_size_t threshold) {
+    if (threshold > capacity_ || threshold % element_size_ != 0u)
+        return ERR_INVALID_ARGS;
+
+    AutoLock al(&lock_);
+    read_threshold_ = threshold;
+    UpdateConsumerSignalsNoLock();
+    return NO_ERROR;
+}
+
 void DataPipe::OnProducerDestruction() {
     AutoLock al(&lock_);
 
@@ -342,12 +420,10 @@ void DataPipe::OnProducerDestruction() {
     }
 
     if (consumer_.alive) {
-        bool is_empty = (free_space_ == capacity_);
-        consumer_.state_tracker.UpdateState(0u, MX_SIGNAL_PEER_CLOSED,
-                                            is_empty ? MX_SIGNAL_READABLE : 0u, 0u);
+        UpdateConsumerSignalsNoLock();
 
         // We can drop the vmo since future reads are not going to succeed.
-        if (is_empty)
+        if (available_size_no_lock() == 0u)
             vmo_.reset();
     }
 }
@@ -363,8 +439,6 @@ void DataPipe::OnConsumerDestruction() {
         consumer_.aspace.reset();
     }
 
-    if (producer_.alive) {
-        producer_.state_tracker.UpdateState(MX_SIGNAL_WRITABLE, MX_SIGNAL_PEER_CLOSED,
-                                            MX_SIGNAL_WRITABLE, 0u);
-    }
+    if (producer_.alive)
+        UpdateProducerSignalsNoLock();
 }

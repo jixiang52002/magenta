@@ -233,9 +233,12 @@ void __libc_extensions_init(uint32_t handle_count,
         case MX_HND_TYPE_MXIO_ROOT:
             mxio_root_handle = mxio_remote_create(h, 0);
             break;
+        case MX_HND_TYPE_MXIO_CWD:
+            mxio_cwd_handle = mxio_remote_create(h, 0);
+            break;
         case MX_HND_TYPE_MXIO_REMOTE:
             // remote objects may have a second handle
-            // which is for signalling events
+            // which is for signaling events
             if (((n + 1) < handle_count) &&
                 (handle_info[n] == handle_info[n + 1])) {
                 mxio_fdtab[arg] = mxio_remote_create(h, handle[n + 1]);
@@ -280,7 +283,9 @@ void __libc_extensions_init(uint32_t handle_count,
 
     if (mxio_root_handle) {
         mxio_root_init = true;
-        __mxio_open(&mxio_cwd_handle, NULL, "/", O_DIRECTORY, 0);
+        if(!mxio_cwd_handle) {
+          __mxio_open(&mxio_cwd_handle, NULL, "/", O_DIRECTORY, 0);
+        }
     } else {
         // placeholder null handle
         mxio_root_handle = mxio_null_create();
@@ -300,6 +305,14 @@ mx_status_t mxio_clone_root(mx_handle_t* handles, uint32_t* types) {
     mx_status_t r = mxio_root_handle->ops->clone(mxio_root_handle, handles, types);
     if (r > 0) {
         *types = MX_HND_TYPE_MXIO_ROOT;
+    }
+    return r;
+}
+
+mx_status_t mxio_clone_cwd(mx_handle_t* handles, uint32_t* types) {
+    mx_status_t r = mxio_cwd_handle->ops->clone(mxio_cwd_handle, handles, types);
+    if (r > 0) {
+        *types = MX_HND_TYPE_MXIO_CWD;
     }
     return r;
 }
@@ -360,9 +373,8 @@ static int status_to_errno(mx_status_t status) {
     switch (status) {
     case ERR_NOT_FOUND: return ENOENT;
     case ERR_NO_MEMORY: return ENOMEM;
-    case ERR_NOT_VALID: return EINVAL;
     case ERR_INVALID_ARGS: return EINVAL;
-    case ERR_NOT_ENOUGH_BUFFER: return EINVAL;
+    case ERR_BUFFER_TOO_SMALL: return EINVAL;
     case ERR_TIMED_OUT: return ETIMEDOUT;
     case ERR_ALREADY_EXISTS: return EEXIST;
     case ERR_REMOTE_CLOSED: return ENOTCONN;
@@ -370,11 +382,7 @@ static int status_to_errno(mx_status_t status) {
     case ERR_IO: return EIO;
     case ERR_NOT_DIR: return ENOTDIR;
     case ERR_NOT_SUPPORTED: return ENOTSUP;
-    case ERR_TOO_BIG: return E2BIG;
-    case ERR_CANCELLED: return ECANCELED;
-    case ERR_BUSY: return EBUSY;
     case ERR_OUT_OF_RANGE: return EINVAL;
-    case ERR_FAULT: return EFAULT;
     case ERR_NO_RESOURCES: return ENOMEM;
     case ERR_BAD_HANDLE: return EBADF;
     case ERR_ACCESS_DENIED: return EACCES;
@@ -602,6 +610,41 @@ static int getdirents(int fd, void* ptr, size_t len) {
     int r = STATUS(io->ops->misc(io, MXRIO_READDIR, len, ptr, 0));
     mxio_release(io);
     return r;
+}
+
+int rename(const char* oldpath, const char* newpath) {
+    char name[MXIO_CHUNK_SIZE];
+    size_t oldlen = strlen(oldpath);
+    size_t newlen = strlen(newpath);
+    if (oldlen + newlen + 2 > MXIO_CHUNK_SIZE) {
+        return ERRNO(EINVAL);
+    }
+
+    mxio_t* io;
+    if (oldpath[0] == '/' && newpath[0] == '/') {
+        // Both paths are absolute: Rename relative to mxio_root
+        mtx_lock(&mxio_lock);
+        io = mxio_root_handle;
+        mxio_acquire(io);
+        mtx_unlock(&mxio_lock);
+    } else if (oldpath[0] != '/' && newpath[0] != '/') {
+        // Both paths are relative: Rename relative to mxio_cwd
+        mtx_lock(&mxio_lock);
+        io = mxio_cwd_handle;
+        mxio_acquire(io);
+        mtx_unlock(&mxio_lock);
+    } else {
+        // Mixed absolute & relative paths: Unsupported
+        return ERROR(ERR_NOT_SUPPORTED);
+    }
+
+    memcpy(name, oldpath, oldlen);
+    name[oldlen] = '\0';
+    memcpy(name + oldlen + 1, newpath, newlen);
+    name[oldlen + newlen + 1] = '\0';
+    mx_status_t r = io->ops->misc(io, MXRIO_RENAME, 0, (void*)name, oldlen + newlen + 2);
+    mxio_release(io);
+    return STATUS(r);
 }
 
 int unlink(const char* path) {

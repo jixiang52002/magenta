@@ -12,6 +12,7 @@
 #include <arch/arch_ops.h>
 #include <arch/arm64.h>
 #include <kernel/thread.h>
+#include <platform.h>
 
 #if WITH_LIB_MAGENTA
 #include <lib/user_copy.h>
@@ -19,12 +20,6 @@
 #endif
 
 #define LOCAL_TRACE 0
-
-struct arch_exception_context {
-    struct arm64_iframe_long *frame;
-    uint64_t far;
-    uint32_t esr;
-};
 
 struct fault_handler_table_entry {
     uint64_t pc;
@@ -218,7 +213,7 @@ void arm64_sync_exception(struct arm64_iframe_long *iframe, uint exception_flags
     printf("ESR 0x%x: ec 0x%x, il 0x%x, iss 0x%x\n", esr, ec, il, iss);
     dump_iframe(iframe);
 
-    panic("die\n");
+    platform_halt(HALT_ACTION_HALT, HALT_REASON_SW_PANIC);
 }
 
 void arm64_irq(struct arm64_iframe_long *iframe, uint exception_flags)
@@ -235,9 +230,9 @@ void arm64_irq(struct arm64_iframe_long *iframe, uint exception_flags)
         thread_process_pending_signals();
     }
 
-    /* preempt the thread if the interrupt has signalled it */
+    /* preempt the thread if the interrupt has signaled it */
     if (ret != INT_NO_RESCHEDULE)
-        thread_preempt();
+        thread_preempt(true);
 }
 
 void arm64_invalid_exception(struct arm64_iframe_long *iframe, unsigned int which)
@@ -245,7 +240,7 @@ void arm64_invalid_exception(struct arm64_iframe_long *iframe, unsigned int whic
     printf("invalid exception, which 0x%x\n", which);
     dump_iframe(iframe);
 
-    panic("die\n");
+    platform_halt(HALT_ACTION_HALT, HALT_REASON_SW_PANIC);
 }
 
 #if WITH_LIB_MAGENTA
@@ -287,7 +282,11 @@ void arch_fill_in_exception_context(const arch_exception_context_t *arch_context
 {
     mx_context->arch_id = ARCH_ID_ARM_64;
 
-    // for now do a direct copy of the exception context frame
-    mx_context->arch.u.arm_64 = *(arm64_exc_frame_t*)arch_context->frame;
+    // If there was a fatal page fault, fill in the address that caused the fault.
+    if (EXC_FATAL_PAGE_FAULT == mx_context->arch.subtype) {
+        mx_context->arch.u.arm_64.far = arch_context->far;
+    } else {
+        mx_context->arch.u.arm_64.far = 0;
+    }
 }
 #endif

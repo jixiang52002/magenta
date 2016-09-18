@@ -21,6 +21,9 @@ MODULE_SRCS := \
     $(LOCAL_DIR)/syscalls_ddk.cpp \
     $(LOCAL_DIR)/syscalls_exceptions.cpp \
     $(LOCAL_DIR)/syscalls_magenta.cpp \
+    $(LOCAL_DIR)/syscalls_msgpipe.cpp \
     $(LOCAL_DIR)/syscalls_test.cpp \
+    $(LOCAL_DIR)/syscalls_handle_ops.cpp \
+    $(LOCAL_DIR)/syscalls_handle_wait.cpp \
 
 include make/module.mk

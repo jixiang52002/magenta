@@ -16,6 +16,7 @@
 #include <magenta/listnode.h>
 
 #include <magenta/device/device.h>
+#include <magenta/device/devmgr.h>
 #include <magenta/processargs.h>
 #include <magenta/syscalls.h>
 
@@ -135,7 +136,7 @@ static mx_status_t vfs_open(vnode_t* vndir, vnode_t** out,
         if ((r = vndir->ops->lookup(vndir, &vn, path, len)) < 0) {
             return r;
         }
-        if (vn->remote > 0) {
+        if ((vn->flags & V_FLAG_REMOTE) && (vn->remote > 0)) {
             *pathout = ".";
             return vn->remote;
         }
@@ -157,7 +158,7 @@ mx_status_t vfs_fill_dirent(vdirent_t* de, size_t delen,
     if (sz & 3)
         sz = (sz + 3) & (~3);
     if (sz > delen)
-        return ERR_TOO_BIG;
+        return ERR_INVALID_ARGS;
     de->size = sz;
     de->type = type;
     memcpy(de->name, name, len);
@@ -165,21 +166,34 @@ mx_status_t vfs_fill_dirent(vdirent_t* de, size_t delen,
     return sz;
 }
 
-static mx_status_t vfs_get_handles(vnode_t* vn, bool as_dir, mx_handle_t* hnds, uint32_t* ids, const char* trackfn) {
-    mx_status_t r;
-    if (vn->flags & V_FLAG_DEVICE && !as_dir) {
-        // opening a device, get devmgr handles
-        r = devmgr_get_handles((mx_device_t*)vn->pdata, NULL, hnds, ids);
+static mx_status_t vfs_get_handles(vnode_t* vn, bool as_dir,
+                                   mx_handle_t* hnds, uint32_t* type,
+                                   void* extra, uint32_t* esize,
+                                   const char* trackfn) {
+    if ((vn->flags & V_FLAG_DEVICE) && !as_dir) {
+        *type = 0;
+        hnds[0] = vn->remote;
+        return 1;
+    } else if (vn->flags & V_FLAG_VMOFILE) {
+        mx_off_t* args = extra;
+        hnds[0] = vfs_get_vmofile(vn, args + 0, args + 1);
+        *type = MXIO_PROTOCOL_VMOFILE;
+        *esize = sizeof(mx_off_t) * 2;
+        return 1;
     } else {
         // local vnode or device as a directory, we will create the handles
         hnds[0] = vfs_create_handle(vn, trackfn);
-        ids[0] = MX_HND_TYPE_MXIO_REMOTE;
-        r = 1;
+        *type = MXIO_PROTOCOL_REMOTE;
+        return 1;
     }
-    return r;
 }
 
-mx_status_t txn_handoff_clone(mx_handle_t srv, mx_handle_t rh);
+mx_status_t txn_handoff_clone(mx_handle_t srv, mx_handle_t rh) {
+    mxrio_msg_t msg;
+    memset(&msg, 0, MXRIO_HDR_SZ);
+    msg.op = MXRIO_CLONE;
+    return mxrio_txn_handoff(srv, rh, &msg);
+}
 
 static mx_status_t txn_handoff_open(mx_handle_t srv, mx_handle_t rh,
                                     const char* path, uint32_t flags, uint32_t mode) {
@@ -194,12 +208,28 @@ static mx_status_t txn_handoff_open(mx_handle_t srv, mx_handle_t rh,
     return mxrio_txn_handoff(srv, rh, &msg);
 }
 
+static mx_status_t txn_handoff_rename(mx_handle_t srv, mx_handle_t rh,
+                                      const char* oldpath, const char* newpath) {
+    mxrio_msg_t msg;
+    memset(&msg, 0, MXRIO_HDR_SZ);
+    size_t oldlen = strlen(oldpath);
+    size_t newlen = strlen(newpath);
+    msg.op = MXRIO_RENAME;
+    memcpy(msg.data, oldpath, oldlen);
+    msg.data[oldlen] = '\0';
+    memcpy(msg.data + oldlen + 1, newpath, newlen);
+    msg.data[oldlen + newlen + 1] = '\0';
+    msg.datalen = oldlen + newlen + 2;
+    return mxrio_txn_handoff(srv, rh, &msg);
+}
+
 static vnode_t* volatile vfs_txn_vn;
 static volatile int vfs_txn_op;
 
 static mx_status_t _vfs_open(mxrio_msg_t* msg, mx_handle_t rh,
                              vnode_t* vn, const char* path,
-                             uint32_t flags, uint32_t mode) {
+                             uint32_t flags, uint32_t mode,
+                             void* extra, uint32_t* esize) {
     mx_status_t r;
     mtx_lock(&vfs_lock);
     r = vfs_open(vn, &vn, path, &path, flags, mode);
@@ -218,12 +248,13 @@ static mx_status_t _vfs_open(mxrio_msg_t* msg, mx_handle_t rh,
         }
         return ERR_DISPATCHER_INDIRECT;
     }
-    uint32_t ids[VFS_MAX_HANDLES];
-    if ((r = vfs_get_handles(vn, flags & O_DIRECTORY, msg->handle, ids, (const char*)msg->data)) < 0) {
+    uint32_t type;
+    if ((r = vfs_get_handles(vn, flags & O_DIRECTORY, msg->handle, &type,
+                             extra, esize, (const char*)msg->data)) < 0) {
         vn->ops->close(vn);
         return r;
     }
-    if (ids[0] == 0) {
+    if (type == 0) {
         // device is non-local, handle is the server that
         // can clone it for us, redirect the rpc to there
         if ((r = txn_handoff_clone(msg->handle[0], rh)) < 0) {
@@ -238,8 +269,7 @@ static mx_status_t _vfs_open(mxrio_msg_t* msg, mx_handle_t rh,
     // the backend behind get_handles holds the on-going ref
     vn_release(vn);
 
-    // TODO: ensure this is always true:
-    msg->arg2.protocol = MXIO_PROTOCOL_REMOTE;
+    msg->arg2.protocol = type;
     msg->hcount = r;
     xprintf("vfs: open: h=%x\n", msg->handle[0]);
     return NO_ERROR;
@@ -247,7 +277,8 @@ static mx_status_t _vfs_open(mxrio_msg_t* msg, mx_handle_t rh,
 
 static ssize_t do_ioctl(vnode_t* vn, uint32_t op, const void* in_buf, size_t in_len,
                         void* out_buf, size_t out_len) {
-    if (op == IOCTL_DEVICE_WATCH_DIR) {
+    switch (op) {
+    case IOCTL_DEVICE_WATCH_DIR: {
         if ((out_len != sizeof(mx_handle_t)) || (in_len != 0)) {
             return ERR_INVALID_ARGS;
         }
@@ -271,7 +302,25 @@ static ssize_t do_ioctl(vnode_t* vn, uint32_t op, const void* in_buf, size_t in_
         mtx_unlock(&vfs_lock);
         xprintf("new watcher vn=%p w=%p\n", vn, watcher);
         return sizeof(mx_handle_t);
-    } else {
+    }
+    case IOCTL_DEVMGR_MOUNT_FS: {
+        if ((in_len != 0) || (out_len != sizeof(mx_handle_t))) {
+            return ERR_INVALID_ARGS;
+        }
+        mx_handle_t h[2];
+        mx_status_t status;
+        if ((status = mx_msgpipe_create(h, 0)) < 0) {
+            return status;
+        }
+        if ((status = vfs_install_remote(vn, h[1])) < 0) {
+            mx_handle_close(h[0]);
+            mx_handle_close(h[1]);
+            return status;
+        }
+        memcpy(out_buf, h, sizeof(mx_handle_t));
+        return sizeof(mx_handle_t);
+    }
+    default:
         return vn->ops->ioctl(vn, op, in_buf, in_len, out_buf, out_len);
     }
 }
@@ -298,7 +347,9 @@ static mx_status_t _vfs_handler(mxrio_msg_t* msg, mx_handle_t rh, void* cookie) 
         }
         path[len] = 0;
         xprintf("vfs: open name='%s' flags=%d mode=%u\n", path, arg, msg->arg2.mode);
-        return _vfs_open(msg, rh, vn, path, arg, msg->arg2.mode);
+        mx_status_t r = _vfs_open(msg, rh, vn, path, arg, msg->arg2.mode, msg->data, &msg->datalen);
+        xprintf("vfs open r=%d dl=%u\n", r, msg->datalen);
+        return r;
     }
     case MXRIO_CLOSE:
         // this will drop the ref on the vn
@@ -438,6 +489,41 @@ static mx_status_t _vfs_handler(mxrio_msg_t* msg, mx_handle_t rh, void* cookie) 
             msg->datalen = r;
         }
         return r;
+    }
+    case MXRIO_RENAME: {
+        if (len < 4) { // At least one byte for src + dst + null terminators
+            return ERR_INVALID_ARGS;
+        }
+        char* data_end = (char*)(msg->data + len - 1);
+        *data_end = '\0';
+        const char* oldpath = (const char*)msg->data;
+        size_t oldlen = strlen(oldpath);
+        const char* newpath = (const char*)msg->data + (oldlen + 1);
+        if (data_end <= newpath) {
+            return ERR_INVALID_ARGS;
+        }
+        vnode_t* oldparent, *newparent;
+        mx_status_t r1, r2;
+        if ((r1 = vfs_walk(vn, &oldparent, oldpath, &oldpath)) < 0) {
+            return r1;
+        } else if ((r2 = vfs_walk(vn, &newparent, newpath, &newpath)) < 0) {
+            return r2;
+        } else if (r1 != r2) {
+            // Rename can only be directed to one filesystem
+            return ERR_NOT_SUPPORTED;
+        }
+
+        if (r1 == 0) {
+            // Local filesystem
+            return vn->ops->rename(oldparent, newparent, oldpath,
+                                   strlen(oldpath), newpath, strlen(newpath));
+        } else {
+            // Remote filesystem
+            if ((r1 = txn_handoff_rename(r1, rh, oldpath, newpath)) < 0) {
+                return r1;
+            }
+            return ERR_DISPATCHER_INDIRECT;
+        }
     }
     case MXRIO_UNLINK:
         return vn->ops->unlink(vn, (const char*)msg->data, len);

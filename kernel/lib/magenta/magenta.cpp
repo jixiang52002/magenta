@@ -19,6 +19,7 @@
 #include <magenta/excp_port.h>
 #include <magenta/handle.h>
 #include <magenta/process_dispatcher.h>
+#include <magenta/resource_dispatcher.h>
 #include <magenta/state_tracker.h>
 
 // The next two includes should be removed. See DeleteHandle().
@@ -68,8 +69,6 @@ void DeleteHandle(Handle* handle) {
         // have complicated Close() logic which cannot be untangled at
         // this time.
         switch (disp->get_type()) {
-            case MX_OBJ_TYPE_PCI_INT: disp->get_specific<PciInterruptDispatcher>()->Close();
-                break;
             case MX_OBJ_TYPE_IOMAP: disp->get_specific<IoMappingDispatcher>()->Close();
                 break;
             default:  break;
@@ -138,5 +137,10 @@ mx_status_t magenta_sleep(mx_time_t nanoseconds) {
     return thread_sleep_etc(t, true);
 }
 
-LK_INIT_HOOK(magenta, magenta_init, LK_INIT_LEVEL_THREADING);
+mx_status_t validate_resource_handle(mx_handle_t handle) {
+    auto up = ProcessDispatcher::GetCurrent();
+    mxtl::RefPtr<ResourceDispatcher> resource;
+    return up->GetDispatcher(handle, &resource);
+}
 
+LK_INIT_HOOK(magenta, magenta_init, LK_INIT_LEVEL_THREADING);

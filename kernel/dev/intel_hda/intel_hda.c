@@ -211,7 +211,7 @@ static inline status_t intel_hda_setup_command_buffer_size(volatile uint8_t* siz
         cmd = HDA_REG_CORBSIZE_CFG_2ENT;
     } else {
         LTRACEF("Invalid ring buffer capabilities! (0x%02x @ %p)\n", tmp, size_reg);
-        return ERR_NOT_VALID;
+        return ERR_INTERNAL;
     }
 
     REG_WR_ADDR(8, size_reg, cmd);
@@ -409,9 +409,9 @@ pcie_irq_handler_retval_t intel_hda_pci_irq_handler(struct pcie_device_state* pc
     REG_CLR_BITS(32, r, intctl, HDA_REG_INTCTL_GIE);
 
     /* Add this device to the work thread's pending work list, and make certain
-     * that it is signalled to wake up.  If the pending work list was not
+     * that it is signaled to wake up.  If the pending work list was not
      * already empty, then we should be able to assert that the thread is
-     * currently being signalled and that there is no need to force an immediate
+     * currently being signaled and that there is no need to force an immediate
      * reschedule.  If we just went from 0 devices to 1 device on the pending
      * work list, we need to make sure to wake up the work thread and request a
      * resched. */
@@ -454,7 +454,7 @@ static status_t intel_hda_pci_startup(struct pcie_device_state* pci_device) {
     if (sizeof(hda_all_registers_t) != info->size) {
         TRACEF("Unexpected register window size!  (Got %llu; expected %zu)\n",
                 info->size, sizeof(hda_all_registers_t));
-        ret = ERR_NOT_VALID;
+        ret = ERR_INTERNAL;
         goto finished;
     }
 
@@ -487,7 +487,7 @@ static status_t intel_hda_pci_startup(struct pcie_device_state* pci_device) {
 
     if ((1 != major) || (0 != minor)) {
         TRACEF("Unexpected HW revision %d.%d!\n", major, minor);
-        ret = ERR_NOT_VALID;
+        ret = ERR_INTERNAL;
         goto finished;
     }
 
@@ -505,7 +505,7 @@ static status_t intel_hda_pci_startup(struct pcie_device_state* pci_device) {
                dev->output_strm_cnt,
                dev->bidir_strm_cnt,
                countof(r->stream_desc));
-        ret = ERR_NOT_VALID;
+        ret = ERR_INTERNAL;
         goto finished;
     }
 

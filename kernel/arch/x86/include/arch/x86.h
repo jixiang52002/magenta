@@ -44,6 +44,12 @@ typedef struct x86_32_iframe x86_iframe_t;
 typedef struct x86_64_iframe x86_iframe_t;
 #endif
 
+struct arch_exception_context {
+    bool is_page_fault;
+    x86_iframe_t *frame;
+    uint32_t cr2;
+};
+
 struct x86_32_context_switch_frame {
     uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax;
     uint32_t eflags;
@@ -84,7 +90,7 @@ void x86_init_smp(uint32_t *apic_ids, uint32_t num_cpus);
  * @param count The number of entries in the apic_ids list.
  *
  * @return ERR_INVALID_ARGS if an unknown APIC ID was provided.
- * @return ERR_ALREADY_STARTED if one of the targets is currently online
+ * @return ERR_BAD_STATE if one of the targets is currently online
  * @return ERR_TIMED_OUT if one of the targets failed to launch
  */
 status_t x86_bringup_aps(uint32_t *apic_ids, uint32_t count);

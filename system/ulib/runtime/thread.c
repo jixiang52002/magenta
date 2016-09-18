@@ -32,7 +32,6 @@ enum {
 
 struct mxr_thread {
     mx_handle_t handle;
-    intptr_t return_value;
     mxr_thread_entry_t entry;
     void* arg;
 
@@ -53,11 +52,9 @@ static mx_status_t allocate_thread_page(mxr_thread_t** thread_out) {
     if (vmo < 0)
         return (mx_status_t)vmo;
 
-    // TODO(kulakowski) Track process handle.
-    mx_handle_t self_handle = 0;
     uintptr_t mapping = 0;
     uint32_t flags = MX_VM_FLAG_PERM_READ | MX_VM_FLAG_PERM_WRITE;
-    mx_status_t status = _mx_process_map_vm(self_handle, vmo, 0, len,
+    mx_status_t status = _mx_process_map_vm(mx_process_self(), vmo, 0, len,
                                             &mapping, flags);
     _mx_handle_close(vmo);
     if (status != NO_ERROR)
@@ -72,36 +69,28 @@ static mx_status_t allocate_thread_page(mxr_thread_t** thread_out) {
 
 static mx_status_t deallocate_thread_page(mxr_thread_t* thread) {
     CHECK_THREAD(thread);
-    // TODO(kulakowski) Track process handle.
-    mx_handle_t self_handle = 0;
     uintptr_t mapping = (uintptr_t)thread;
-    return _mx_process_unmap_vm(self_handle, mapping, 0u);
+    return _mx_process_unmap_vm(mx_process_self(), mapping, 0u);
 }
 
-static mx_status_t thread_cleanup(mxr_thread_t* thread, intptr_t* return_value_out) {
+static mx_status_t thread_cleanup(mxr_thread_t* thread) {
     CHECK_THREAD(thread);
     mx_status_t status = _mx_handle_close(thread->handle);
     thread->handle = 0;
     if (status != NO_ERROR)
         return status;
-    intptr_t return_value = thread->return_value;
-    status = deallocate_thread_page(thread);
-    if (status != NO_ERROR)
-        return status;
-    if (return_value_out)
-        *return_value_out = return_value;
-    return NO_ERROR;
+    return deallocate_thread_page(thread);
 }
 
 static void thread_trampoline(uintptr_t ctx) {
     mxr_thread_t* thread = (mxr_thread_t*)ctx;
     CHECK_THREAD(thread);
-    mxr_thread_exit(thread, thread->entry(thread->arg));
+    thread->entry(thread->arg);
+    mxr_thread_exit(thread);
 }
 
-_Noreturn void mxr_thread_exit(mxr_thread_t* thread, intptr_t return_value) {
+_Noreturn void mxr_thread_exit(mxr_thread_t* thread) {
     CHECK_THREAD(thread);
-    thread->return_value = return_value;
 
     mxr_mutex_lock(&thread->state_lock);
     switch (thread->state) {
@@ -114,7 +103,7 @@ _Noreturn void mxr_thread_exit(mxr_thread_t* thread, intptr_t return_value) {
         break;
     case DETACHED:
         mxr_mutex_unlock(&thread->state_lock);
-        thread_cleanup(thread, NULL);
+        thread_cleanup(thread);
         break;
     case DONE:
         // Not reached.
@@ -138,13 +127,10 @@ mx_status_t mxr_thread_create(const char* name, mxr_thread_t** thread_out) {
     if (status < 0)
         return status;
 
-    // TODO(kulakowski) Track process handle.
-    mx_handle_t self_handle = 0;
-
     if (name == NULL)
         name = "";
     size_t name_length = local_strlen(name) + 1;
-    mx_handle_t handle = _mx_thread_create(self_handle, name, name_length, 0);
+    mx_handle_t handle = _mx_thread_create(mx_process_self(), name, name_length, 0);
     if (handle < 0) {
         deallocate_thread_page(thread);
         return (mx_status_t)handle;
@@ -179,7 +165,7 @@ mx_status_t mxr_thread_start(mxr_thread_t* thread, uintptr_t stack_addr, size_t 
     return NO_ERROR;
 }
 
-mx_status_t mxr_thread_join(mxr_thread_t* thread, intptr_t* return_value_out) {
+mx_status_t mxr_thread_join(mxr_thread_t* thread) {
     CHECK_THREAD(thread);
     mxr_mutex_lock(&thread->state_lock);
     switch (thread->state) {
@@ -201,7 +187,7 @@ mx_status_t mxr_thread_join(mxr_thread_t* thread, intptr_t* return_value_out) {
         break;
     }
 
-    return thread_cleanup(thread, return_value_out);
+    return thread_cleanup(thread);
 }
 
 mx_status_t mxr_thread_detach(mxr_thread_t* thread) {
@@ -220,7 +206,7 @@ mx_status_t mxr_thread_detach(mxr_thread_t* thread) {
         break;
     case DONE:
         mxr_mutex_unlock(&thread->state_lock);
-        status = thread_cleanup(thread, NULL);
+        status = thread_cleanup(thread);
         break;
     }
 

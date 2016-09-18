@@ -17,7 +17,7 @@
 #include <mxio/util.h>
 
 #include "devmgr.h"
-#include "vfs.h"
+#include "devhost.h"
 
 static acpi_handle_t acpi_root;
 
@@ -29,14 +29,8 @@ mx_status_t devmgr_launch_acpisvc(void) {
     };
 
     mx_handle_t acpi_comm[2] = {0};
-    mx_handle_t acpi_ready[2] = {0};
 
     mx_status_t status = mx_msgpipe_create(acpi_comm, 0);
-    if (status != NO_ERROR) {
-        goto cleanup_handles;
-    }
-
-    status = mx_msgpipe_create(acpi_ready, 0);
     if (status != NO_ERROR) {
         goto cleanup_handles;
     }
@@ -47,19 +41,17 @@ mx_status_t devmgr_launch_acpisvc(void) {
         goto cleanup_handles;
     }
 
-    mx_handle_t hnd[4];
-    uint32_t ids[4];
+    mx_handle_t hnd[3];
+    uint32_t ids[3];
     ids[0] = MX_HND_INFO(MX_HND_TYPE_MXIO_LOGGER, MXIO_FLAG_USE_FOR_STDIO | 1);
     hnd[0] = logger;
     ids[1] = MX_HND_TYPE_USER0;
-    hnd[1] = mx_handle_duplicate(root_resource_handle, MX_RIGHT_SAME_RIGHTS);
+    hnd[1] = mx_handle_duplicate(get_root_resource(), MX_RIGHT_SAME_RIGHTS);
     ids[2] = MX_HND_TYPE_USER1;
     hnd[2] = acpi_comm[1];
-    ids[3] = MX_HND_TYPE_USER2;
-    hnd[3] = acpi_ready[1];
 
     printf("devmgr: launch acpisvc\n");
-    mx_handle_t proc = launchpad_launch("acpisvc", 1, args, NULL, 4, hnd, ids);
+    mx_handle_t proc = launchpad_launch("acpisvc", 1, args, NULL, 3, hnd, ids);
     if (proc < 0) {
         printf("devmgr: acpisvc launch failed: %d\n", proc);
         status = proc;
@@ -68,14 +60,8 @@ mx_status_t devmgr_launch_acpisvc(void) {
 
     mx_handle_close(proc);
 
-    // Wait for acpisvc to close the acpi_ready handle (to signal ready)
-    status = mx_handle_wait_one(acpi_ready[0],
-                                MX_SIGNAL_PEER_CLOSED,
-                                MX_SEC(5),
-                                NULL);
     if (status != NO_ERROR) {
         mx_handle_close(acpi_comm[0]);
-        mx_handle_close(acpi_ready[0]);
         return status;
     }
 
@@ -86,10 +72,6 @@ cleanup_handles:
     if (acpi_comm[0]) {
         mx_handle_close(acpi_comm[0]);
         mx_handle_close(acpi_comm[1]);
-    }
-    if (acpi_ready[0]) {
-        mx_handle_close(acpi_ready[0]);
-        mx_handle_close(acpi_ready[1]);
     }
     return status;
 }
@@ -136,7 +118,7 @@ mx_status_t devmgr_init_pcie(void) {
     acpi_handle_close(&pcie_handle);
 
     len -= offsetof(acpi_rsp_get_pci_init_arg_t, arg);
-    status = mx_pci_init(root_resource_handle, &rsp->arg, len);
+    status = mx_pci_init(get_root_resource(), &rsp->arg, len);
 
     free(rsp);
     return status;
@@ -144,10 +126,18 @@ mx_status_t devmgr_init_pcie(void) {
 
 void devmgr_poweroff(void) {
     acpi_s_state_transition(&acpi_root, ACPI_S_STATE_S5);
-    mx_debug_send_command(root_resource_handle, "poweroff", sizeof("poweroff"));
+    mx_debug_send_command(get_root_resource(), "poweroff", sizeof("poweroff"));
 }
 
 void devmgr_reboot(void) {
     acpi_s_state_transition(&acpi_root, ACPI_S_STATE_REBOOT);
-    mx_debug_send_command(root_resource_handle, "reboot", sizeof("reboot"));
+    mx_debug_send_command(get_root_resource(), "reboot", sizeof("reboot"));
+}
+
+void devmgr_acpi_ps0(char* arg) {
+    acpi_ps0(&acpi_root, arg, strlen(arg));
+}
+
+mx_handle_t devmgr_acpi_clone(void) {
+    return acpi_clone_handle(&acpi_root);
 }

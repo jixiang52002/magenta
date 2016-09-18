@@ -17,11 +17,6 @@
 #include <magenta/exception.h>
 #endif
 
-struct arch_exception_context {
-    bool iframe;
-    void *frame;
-};
-
 struct fault_handler_table_entry {
     uint32_t pc;
     uint32_t fault_handler;
@@ -102,7 +97,6 @@ static void exception_die(struct arm_fault_frame *frame, const char *msg)
     dump_fault_frame(frame);
 
     platform_halt(HALT_ACTION_HALT, HALT_REASON_SW_PANIC);
-    for (;;);
 }
 
 static void exception_die_iframe(struct arm_iframe *frame, const char *msg)
@@ -111,7 +105,6 @@ static void exception_die_iframe(struct arm_iframe *frame, const char *msg)
     dump_iframe(frame);
 
     platform_halt(HALT_ACTION_HALT, HALT_REASON_SW_PANIC);
-    for (;;);
 }
 
 __WEAK void arm_syscall_handler(struct arm_fault_frame *frame)
@@ -216,7 +209,7 @@ static status_t arm_shared_page_fault_handler(struct arm_fault_frame *frame, uin
             break;
     }
 
-    return ERR_FAULT;
+    return ERR_INTERNAL;
 }
 
 void arm_data_abort_handler(struct arm_fault_frame *frame)

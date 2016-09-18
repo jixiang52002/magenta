@@ -31,10 +31,9 @@
 #define LOCAL_TRACE 0
 
 
-static constexpr mx_rights_t kDefaultProcessRights = MX_RIGHT_READ  |
-                                                     MX_RIGHT_WRITE |
-                                                     MX_RIGHT_DUPLICATE |
-                                                     MX_RIGHT_TRANSFER;
+static constexpr mx_rights_t kDefaultProcessRights =
+        MX_RIGHT_READ  | MX_RIGHT_WRITE | MX_RIGHT_DUPLICATE | MX_RIGHT_TRANSFER |
+        MX_RIGHT_GET_PROPERTY | MX_RIGHT_SET_PROPERTY;
 
 mutex_t ProcessDispatcher::global_process_list_mutex_ =
     MUTEX_INITIAL_VALUE(global_process_list_mutex_);
@@ -300,7 +299,7 @@ void ProcessDispatcher::SetState(State s) {
         aspace_->Destroy();
 
         // signal waiter
-        LTRACEF_LEVEL(2, "signalling waiters\n");
+        LTRACEF_LEVEL(2, "signaling waiters\n");
         state_tracker_.UpdateSatisfied(0u, MX_SIGNAL_SIGNALED);
 
         {
@@ -481,7 +480,7 @@ mx_status_t ProcessDispatcher::Unmap(uintptr_t address, mx_size_t len) {
     mx_status_t status;
 
     // TODO: support range unmapping
-    // at the moment only support unmapping what is at a given address, signalled with len = 0
+    // at the moment only support unmapping what is at a given address, signaled with len = 0
     if (len != 0)
         return ERR_INVALID_ARGS;
 

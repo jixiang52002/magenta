@@ -21,6 +21,7 @@
 #include <kernel/vm/vm_object.h>
 
 #include <magenta/handle.h>
+#include <magenta/io_port_client.h>
 #include <magenta/user_copy.h>
 
 #define LOCAL_TRACE 0
@@ -71,7 +72,6 @@ bool SocketDispatcher::CBuf::empty() const {
 }
 
 mx_size_t SocketDispatcher::CBuf::Write(const void* src, mx_size_t len, bool from_user) {
-    const char *buf = (const char*)src;
 
     size_t write_len;
     size_t pos = 0;
@@ -88,10 +88,15 @@ mx_size_t SocketDispatcher::CBuf::Write(const void* src, mx_size_t len, bool fro
             break;
         }
 
-        if (from_user)
-            vmo_->WriteUser(buf + pos, head_, write_len, nullptr);
-        else
-            memcpy(buf_ + head_, buf + pos, write_len);
+        const char *ptr = (const char*)src;
+        ptr += pos;
+        if (from_user) {
+            // TODO: find a safer way to do this
+            user_ptr<const void> uptr(ptr);
+            vmo_->WriteUser(uptr, head_, write_len, nullptr);
+        } else {
+            memcpy(buf_ + head_, ptr, write_len);
+        }
 
         head_ = INC_POINTER(len_pow2_, head_, write_len);
         pos += write_len;
@@ -100,8 +105,6 @@ mx_size_t SocketDispatcher::CBuf::Write(const void* src, mx_size_t len, bool fro
 }
 
 mx_size_t SocketDispatcher::CBuf::Read(void* dest, mx_size_t len, bool from_user) {
-    char *buf = (char*)dest;
-
     size_t ret = 0;
 
     if (tail_ != head_) {
@@ -118,10 +121,15 @@ mx_size_t SocketDispatcher::CBuf::Read(void* dest, mx_size_t len, bool from_user
                 read_len = MIN(valpow2(len_pow2_) - tail_, len - pos);
             }
 
-            if (from_user)
-                vmo_->ReadUser(buf + pos, tail_, read_len, nullptr);
-            else
-                memcpy(buf + pos, buf_ + tail_, read_len);
+            char *ptr = (char*)dest;
+            ptr += pos;
+            if (from_user) {
+                // TODO: find a safer way to do this
+                user_ptr<void> uptr(ptr);
+                vmo_->ReadUser(uptr, tail_, read_len, nullptr);
+            } else {
+                memcpy(ptr, buf_ + tail_, read_len);
+            }
 
             tail_ = INC_POINTER(len_pow2_, tail_, read_len);
             pos += read_len;
@@ -189,12 +197,30 @@ void SocketDispatcher::on_zero_handles() {
 }
 
 void SocketDispatcher::OnPeerZeroHandles() {
-    {
-        AutoLock lock(&lock_);
-        other_.reset();
-    }
+    AutoLock lock(&lock_);
+    other_.reset();
     state_tracker_.UpdateState(MX_SIGNAL_WRITABLE, MX_SIGNAL_PEER_CLOSED,
                                MX_SIGNAL_WRITABLE, 0u);
+    if (iopc_)
+        iopc_->Signal(MX_SIGNAL_PEER_CLOSED, &lock_);
+}
+
+status_t SocketDispatcher::set_port_client(mxtl::unique_ptr<IOPortClient> client) {
+    if (iopc_)
+        return ERR_BAD_STATE;
+
+    if ((client->get_trigger_signals() & ~(MX_SIGNAL_READABLE | MX_SIGNAL_PEER_CLOSED)) != 0)
+        return ERR_INVALID_ARGS;
+
+    {
+        AutoLock lock(&lock_);
+        iopc_ = mxtl::move(client);
+
+        if (!cbuf_.empty())
+            iopc_->Signal(MX_SIGNAL_READABLE, 0u, &lock_);
+    }
+
+    return NO_ERROR;
 }
 
 mx_ssize_t SocketDispatcher::WriteHelper(const void* src, mx_size_t len,
@@ -223,8 +249,12 @@ mx_ssize_t SocketDispatcher::WriteSelf(const void* src, mx_size_t len, bool from
 
     auto st = cbuf_.Write(src, len, from_user);
 
-    if (was_empty && (st > 0))
-        state_tracker_.UpdateSatisfied(0u, MX_SIGNAL_READABLE);
+    if (st > 0) {
+        if (was_empty)
+            state_tracker_.UpdateSatisfied(0u, MX_SIGNAL_READABLE);
+        if (iopc_)
+            iopc_->Signal(MX_SIGNAL_READABLE, st, &lock_);
+    }
 
     if (!cbuf_.free())
         other_->state_tracker_.UpdateSatisfied(MX_SIGNAL_WRITABLE, 0u);
@@ -237,10 +267,10 @@ mx_ssize_t SocketDispatcher::OOB_WriteSelf(const void* src, mx_size_t len, bool 
     if (oob_len_)
         return ERR_SHOULD_WAIT;
     if (len > sizeof(oob_))
-        return ERR_NOT_ENOUGH_BUFFER;
+        return ERR_BUFFER_TOO_SMALL;
 
     if (from_user) {
-        if (copy_from_user(oob_, mxtl::user_ptr<const void>(src), len)  != NO_ERROR)
+        if (copy_from_user(oob_, user_ptr<const void>(src), len)  != NO_ERROR)
             return ERR_INVALID_ARGS;
     } else {
         memcpy(oob_, src, len);
@@ -248,6 +278,8 @@ mx_ssize_t SocketDispatcher::OOB_WriteSelf(const void* src, mx_size_t len, bool 
 
     oob_len_ = len;
     state_tracker_.UpdateSatisfied(0u, MX_SIGNAL_SIGNALED);
+    if (iopc_)
+        iopc_->Signal(MX_SIGNAL_SIGNALED, &lock_);
     return len;
 }
 
@@ -274,10 +306,10 @@ mx_ssize_t SocketDispatcher::OOB_Read(void* dest, mx_size_t len, bool from_user)
     if (!oob_len_)
         return ERR_SHOULD_WAIT;
     if (oob_len_ > len)
-        return ERR_NOT_ENOUGH_BUFFER;
+        return ERR_BUFFER_TOO_SMALL;
 
     if (from_user) {
-        if (copy_to_user(mxtl::user_ptr<void>(dest), oob_, oob_len_) != NO_ERROR)
+        if (copy_to_user(user_ptr<void>(dest), oob_, oob_len_) != NO_ERROR)
             return ERR_INVALID_ARGS;
     } else {
         memcpy(dest, oob_, oob_len_);

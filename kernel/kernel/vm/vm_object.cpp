@@ -119,7 +119,7 @@ status_t VmObject::Resize(uint64_t s) {
 
     // there's a max size to keep indexes within range
     if (ROUNDUP_PAGE_SIZE(s) > MAX_SIZE)
-        return ERR_TOO_BIG;
+        return ERR_OUT_OF_RANGE;
 
     AutoLock a(lock_);
 
@@ -176,9 +176,8 @@ status_t VmObject::AddPage(vm_page_t* p, uint64_t offset) {
     return NO_ERROR;
 }
 
-vm_page_t* VmObject::GetPage(uint64_t offset) {
+vm_page_t* VmObject::GetPageLocked(uint64_t offset) {
     DEBUG_ASSERT(magic_ == MAGIC);
-    AutoLock a(lock_);
 
     if (offset >= size_)
         return nullptr;
@@ -186,6 +185,13 @@ vm_page_t* VmObject::GetPage(uint64_t offset) {
     size_t index = OffsetToIndex(offset);
 
     return page_array_[index];
+}
+
+vm_page_t* VmObject::GetPage(uint64_t offset) {
+    DEBUG_ASSERT(magic_ == MAGIC);
+    AutoLock a(lock_);
+
+    return GetPageLocked(offset);
 }
 
 vm_page_t* VmObject::FaultPageLocked(uint64_t offset, uint pf_flags) {
@@ -430,36 +436,75 @@ status_t VmObject::Write(const void* _ptr, uint64_t offset, size_t len, size_t* 
     return ReadWriteInternal(offset, len, bytes_written, true, write_routine);
 }
 
-status_t VmObject::ReadUser(void* _ptr, uint64_t offset, size_t len, size_t* bytes_read) {
+status_t VmObject::ReadUser(user_ptr<void> ptr, uint64_t offset, size_t len, size_t* bytes_read) {
     DEBUG_ASSERT(magic_ == MAGIC);
-    // test to make sure this is a iuser pointer
-    if (!is_user_address(reinterpret_cast<vaddr_t>(_ptr))) {
-        DEBUG_ASSERT_MSG(0, "non user pointer passed\n");
+
+    // test to make sure this is a user pointer
+    if (!ptr.is_user_address()) {
         return ERR_INVALID_ARGS;
     }
 
     // read routine that uses copy_to_user
-    uint8_t* ptr = reinterpret_cast<uint8_t*>(_ptr);
     auto read_routine = [ptr](const void* src, size_t offset, size_t len) -> status_t {
-        return copy_to_user_unsafe(ptr + offset, src, len);
+        return copy_to_user(ptr + offset, src, len);
     };
 
     return ReadWriteInternal(offset, len, bytes_read, false, read_routine);
 }
 
-status_t VmObject::WriteUser(const void* _ptr, uint64_t offset, size_t len, size_t* bytes_written) {
+status_t VmObject::WriteUser(user_ptr<const void> ptr, uint64_t offset, size_t len, size_t* bytes_written) {
     DEBUG_ASSERT(magic_ == MAGIC);
-    // test to make sure this is a iuser pointer
-    if (!is_user_address(reinterpret_cast<vaddr_t>(_ptr))) {
-        DEBUG_ASSERT_MSG(0, "non user pointer passed\n");
+
+    // test to make sure this is a user pointer
+    if (!ptr.is_user_address()) {
         return ERR_INVALID_ARGS;
     }
 
     // write routine that uses copy_from_user
-    const uint8_t* ptr = reinterpret_cast<const uint8_t*>(_ptr);
     auto write_routine = [ptr](void* dst, size_t offset, size_t len) -> status_t {
-        return copy_from_user_unsafe(dst, ptr + offset, len);
+        return copy_from_user(dst, ptr + offset, len);
     };
 
     return ReadWriteInternal(offset, len, bytes_written, true, write_routine);
 }
+
+status_t VmObject::Lookup(uint64_t offset, uint64_t len, user_ptr<paddr_t> buffer, size_t buffer_size) {
+    DEBUG_ASSERT(magic_ == MAGIC);
+
+    if (unlikely(len == 0))
+        return ERR_INVALID_ARGS;
+
+    AutoLock a(lock_);
+
+    // verify that the range is within the object
+    if (unlikely(!InRange(offset, len, size_)))
+        return ERR_OUT_OF_RANGE;
+
+    uint64_t start_page_offset = ROUNDDOWN(offset, PAGE_SIZE);
+    uint64_t end = offset + len;
+    uint64_t end_page_offset = ROUNDUP(end, PAGE_SIZE);
+
+    // compute the size of the table we'll need and make sure it fits in the user buffer
+    uint64_t table_size = ((end_page_offset - start_page_offset) / PAGE_SIZE) * sizeof(paddr_t);
+    if (unlikely(table_size > buffer_size))
+        return ERR_BUFFER_TOO_SMALL;
+
+    size_t index = 0;
+    for (uint64_t off = start_page_offset; off != end_page_offset; off += PAGE_SIZE, index++) {
+        // grab a pointer to the page only if it's already present
+        vm_page_t* p = GetPageLocked(off);
+        if (unlikely(!p))
+            return ERR_NO_MEMORY;
+
+        // find the physical address
+        paddr_t pa = vm_page_to_paddr(p);
+
+        // copy it out into user space
+        auto status = copy_to_user(buffer + index * sizeof(pa), &pa, sizeof(pa));
+        if (unlikely(status < 0))
+            return status;
+    }
+
+    return NO_ERROR;
+}
+

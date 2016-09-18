@@ -36,22 +36,15 @@ typedef uint32_t mx_exception_type_t;
 // N.B. "gone" notifications are not responded to.
 #define MX_EXCEPTION_TYPE_GONE 2
 
-typedef struct x86_64_exc_frame {
-    uint64_t rdi, rsi, rbp, rbx, rdx, rcx, rax;
-    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+typedef struct x86_64_exc_data {
     uint64_t vector;
     uint64_t err_code;
-    uint64_t ip, cs, flags;
-    uint64_t user_sp, user_ss;
-} x86_64_exc_frame_t;
+    uint64_t cr2;
+} x86_64_exc_data_t;
 
-typedef struct arm64_exc_frame {
-    uint64_t r[30];
-    uint64_t lr;
-    uint64_t usp;
-    uint64_t elr;
-    uint64_t spsr;
-} arm64_exc_frame_t;
+typedef struct arm64_exc_data {
+    uint64_t far;
+} arm64_exc_data_t;
 
 #define ARCH_ID_UNKNOWN        0u
 #define ARCH_ID_X86_64         1u
@@ -73,8 +66,8 @@ typedef struct mx_exception_context {
         uint32_t subtype;
         mx_vaddr_t pc;
         union {
-            x86_64_exc_frame_t x86_64;
-            arm64_exc_frame_t  arm_64;
+            x86_64_exc_data_t x86_64;
+            arm64_exc_data_t  arm_64;
         } u;
         // TODO(dje): add more stuff, revisit packing
         // For an example list of things one might add, see linux siginfo.
@@ -156,11 +149,11 @@ typedef enum {
     MX_OBJ_TYPE_INTERRUPT           = 9,
     MX_OBJ_TYPE_IOMAP               = 10,
     MX_OBJ_TYPE_PCI_DEVICE          = 11,
-    MX_OBJ_TYPE_PCI_INT             = 12,
-    MX_OBJ_TYPE_LOG                 = 13,
-    MX_OBJ_TYPE_WAIT_SET            = 14,
-    MX_OBJ_TYPE_SOCKET              = 15,
-    MX_OBJ_TYPE_RESOURCE            = 16,
+    MX_OBJ_TYPE_LOG                 = 12,
+    MX_OBJ_TYPE_WAIT_SET            = 13,
+    MX_OBJ_TYPE_SOCKET              = 14,
+    MX_OBJ_TYPE_RESOURCE            = 15,
+    MX_OBJ_TYPE_EVENT_PAIR          = 16,
     MX_OBJ_TYPE_LAST
 } mx_obj_type_t;
 
@@ -323,11 +316,16 @@ typedef struct mx_waitset_result {
 
 // Defines for mx_datapipe_*():
 
+#define MX_DATAPIPE_WRITE_FLAG_ALL_OR_NONE  1u
+// Mask for all the valid MX_DATAPIPE_WRITE_FLAG_... flags:
+#define MX_DATAPIPE_WRITE_FLAG_MASK         1u
+
 // DISCARD, QUERY, and PEEK are mutually exclusive.
 #define MX_DATAPIPE_READ_FLAG_ALL_OR_NONE   1u
 #define MX_DATAPIPE_READ_FLAG_DISCARD       2u
 #define MX_DATAPIPE_READ_FLAG_QUERY         4u
 #define MX_DATAPIPE_READ_FLAG_PEEK          8u
+// Mask for all the valid MX_DATAPIPE_READ_FLAG_... flags:
 #define MX_DATAPIPE_READ_FLAG_MASK          15u
 
 // Buffer size limits on the cprng syscalls
@@ -336,16 +334,42 @@ typedef struct mx_waitset_result {
 
 // Object properties.
 
-#define MX_PROP_BAD_HANDLE_POLICY      1u
+// Argument is MX_POLICY_BAD_HANDLE_... (below, uint32_t).
+#define MX_PROP_BAD_HANDLE_POLICY           1u
+// Argument is a uint32_t.
+#define MX_PROP_NUM_STATE_KINDS             2u
+// Argument is an mx_size_t.
+#define MX_PROP_DATAPIPE_READ_THRESHOLD     3u
+// Argument is an mx_size_t.
+#define MX_PROP_DATAPIPE_WRITE_THRESHOLD    4u
 
-#define MX_POLICY_BAD_HANDLE_IGNORE    0u
-#define MX_POLICY_BAD_HANDLE_LOG       1u
-#define MX_POLICY_BAD_HANDLE_EXIT      2u
+// Policies for MX_PROP_BAD_HANDLE_POLICY:
+#define MX_POLICY_BAD_HANDLE_IGNORE         0u
+#define MX_POLICY_BAD_HANDLE_LOG            1u
+#define MX_POLICY_BAD_HANDLE_EXIT           2u
 
 // Socket flags and limits.
 
 #define MX_SOCKET_CONTROL                1u
 #define MX_SOCKET_CONTROL_MAX_LEN     1024u
+
+// mx_thread_read_state, mx_thread_write_state
+// The maximum size of thread state, in bytes, that can be processed by the
+// read_state/write_state syscalls. It exists so code can expect a sane limit
+// on the amount of memory needed to process the request.
+#define MX_MAX_THREAD_STATE_SIZE 4096u
+
+// The "general regs" are by convention in regset 0.
+#define MX_THREAD_STATE_REGSET0 0u
+#define MX_THREAD_STATE_REGSET1 1u
+#define MX_THREAD_STATE_REGSET2 2u
+#define MX_THREAD_STATE_REGSET3 3u
+#define MX_THREAD_STATE_REGSET4 4u
+#define MX_THREAD_STATE_REGSET5 5u
+#define MX_THREAD_STATE_REGSET6 6u
+#define MX_THREAD_STATE_REGSET7 7u
+#define MX_THREAD_STATE_REGSET8 8u
+#define MX_THREAD_STATE_REGSET9 9u
 
 #ifndef DEPRECATE_COMPAT_SYSCALLS
 typedef struct mx_waitset_result mx_wait_set_result_t;
@@ -355,6 +379,14 @@ typedef struct mx_waitset_result mx_wait_set_result_t;
 #define MX_IO_PORT_PKT_TYPE_USER MX_PORT_PKT_TYPE_USER
 #define MX_IO_PORT_PKT_TYPE_EXCEPTION MX_PORT_PKT_TYPE_EXCEPTION
 #endif
+
+// VM Object opcodes
+#define MX_VMO_OP_COMMIT                1u
+#define MX_VMO_OP_DECOMMIT              2u
+#define MX_VMO_OP_LOCK                  3u
+#define MX_VMO_OP_UNLOCK                4u
+#define MX_VMO_OP_LOOKUP                5u
+#define MX_VMO_OP_CACHE_SYNC            6u
 
 #ifdef __cplusplus
 }

@@ -16,9 +16,10 @@
 #include <dev/udisplay.h>
 #include <kernel/vm.h>
 #include <lib/user_copy.h>
-#include <mxtl/user_ptr.h>
+#include <lib/user_copy/user_ptr.h>
 
 #include <magenta/interrupt_dispatcher.h>
+#include <magenta/interrupt_event_dispatcher.h>
 #include <magenta/magenta.h>
 #include <magenta/pci_device_dispatcher.h>
 #include <magenta/pci_interrupt_dispatcher.h>
@@ -50,7 +51,7 @@ mx_handle_t sys_interrupt_create(mx_handle_t hrsrc, uint32_t vector, uint32_t fl
 
     mxtl::RefPtr<Dispatcher> dispatcher;
     mx_rights_t rights;
-    status_t result = InterruptDispatcher::Create(vector, flags, &dispatcher, &rights);
+    status_t result = InterruptEventDispatcher::Create(vector, flags, &dispatcher, &rights);
     if (result != NO_ERROR)
         return result;
 
@@ -60,18 +61,6 @@ mx_handle_t sys_interrupt_create(mx_handle_t hrsrc, uint32_t vector, uint32_t fl
     mx_handle_t hv = up->MapHandleToValue(handle.get());
     up->AddHandle(mxtl::move(handle));
     return hv;
-}
-
-mx_status_t sys_interrupt_wait(mx_handle_t handle_value) {
-    LTRACEF("handle %u\n", handle_value);
-
-    auto up = ProcessDispatcher::GetCurrent();
-    mxtl::RefPtr<InterruptDispatcher> interrupt;
-    mx_status_t status = up->GetDispatcher(handle_value, &interrupt);
-    if (status != NO_ERROR)
-        return status;
-
-    return interrupt->InterruptWait();
 }
 
 mx_status_t sys_interrupt_complete(mx_handle_t handle_value) {
@@ -88,7 +77,7 @@ mx_status_t sys_interrupt_complete(mx_handle_t handle_value) {
 
 mx_status_t sys_mmap_device_memory(mx_handle_t hrsrc, uintptr_t paddr, uint32_t len,
                                    mx_cache_policy_t cache_policy,
-                                   mxtl::user_ptr<void*> out_vaddr) {
+                                   user_ptr<void*> out_vaddr) {
 
     LTRACEF("addr 0x%lx len 0x%x\n", paddr, len);
 
@@ -166,6 +155,13 @@ mx_status_t sys_alloc_device_memory(mx_handle_t hrsrc, uint32_t len,
     if (res != NO_ERROR)
         return res;
 
+#if ARCH_ARM64
+    /* TODO - need to fix potential race condition where another thread could unmap this memory
+     *    between the allocation and this cache clean, which would cause a fatal page fault
+     */
+    arch_clean_invalidate_cache_range((addr_t)vaddr, len);
+#endif
+
     paddr_t paddr = vaddr_to_paddr(vaddr);
     if (copy_to_user_unsafe(reinterpret_cast<uint8_t*>(out_vaddr), &vaddr, sizeof(void*)) != NO_ERROR ||
         copy_to_user_unsafe(reinterpret_cast<uint8_t*>(out_paddr), &paddr, sizeof(void*)) != NO_ERROR) {
@@ -238,7 +234,7 @@ static status_t pcie_irq_swizzle_from_table(const pcie_device_state_t* dev, uint
     return NO_ERROR;
 }
 
-mx_status_t sys_pci_init(mx_handle_t handle, mxtl::user_ptr<mx_pci_init_arg_t> init_buf, uint32_t len) {
+mx_status_t sys_pci_init(mx_handle_t handle, user_ptr<mx_pci_init_arg_t> init_buf, uint32_t len) {
 
     // TODO: finer grained validation
     // TODO(security): Add additional access checks
@@ -524,7 +520,7 @@ mx_status_t sys_pci_io_read(mx_handle_t handle, uint32_t bar_num, uint32_t offse
 
 mx_handle_t sys_pci_map_interrupt(mx_handle_t handle_value, int32_t which_irq) {
     /**
-     * Returns a handle that can be waited on in sys_pci_interrupt_wait.
+     * Returns a handle that can be waited on.
      * @param handle Handle associated with a PCI device
      * @param which_irq Identifier for an IRQ, returned in sys_pci_get_nth_device, or -1 for legacy
      * interrupts
@@ -552,23 +548,6 @@ mx_handle_t sys_pci_map_interrupt(mx_handle_t handle_value, int32_t which_irq) {
     mx_handle_t interrupt_handle = up->MapHandleToValue(handle.get());
     up->AddHandle(mxtl::move(handle));
     return interrupt_handle;
-}
-
-mx_status_t sys_pci_interrupt_wait(mx_handle_t handle) {
-    /**
-     * TODO: perhaps unify all IRQ types in the kernel
-     * Waits for an interrupt on this handle
-     * @param handle Handle associated with a PCI interrupt
-     */
-    auto up = ProcessDispatcher::GetCurrent();
-
-    mxtl::RefPtr<PciInterruptDispatcher> pci_interrupt;
-    mx_status_t status =
-        up->GetDispatcher(handle, &pci_interrupt, MX_RIGHT_READ);
-    if (status != NO_ERROR)
-        return status;
-
-    return pci_interrupt->InterruptWait();
 }
 
 mx_handle_t sys_pci_map_config(mx_handle_t handle) {

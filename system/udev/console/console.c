@@ -13,8 +13,6 @@
 #include <string.h>
 #include <threads.h>
 
-extern mx_handle_t root_resource_handle;
-
 #define FIFOSIZE 256
 #define FIFOMASK (FIFOSIZE - 1)
 
@@ -47,9 +45,8 @@ static void fifo_write(uint8_t x) {
 static int debug_reader(void* arg) {
     mx_device_t* dev = arg;
     uint8_t ch;
-    printf("debug_reader()\n");
     for (;;) {
-        if (mx_debug_read(root_resource_handle, (void*)&ch, 1) == 1) {
+        if (mx_debug_read(get_root_resource(), (void*)&ch, 1) == 1) {
             mtx_lock(&fifo.lock);
             if (fifo.head == fifo.tail) {
                 device_state_set(dev, DEV_STATE_READABLE);
@@ -87,9 +84,9 @@ static mx_protocol_device_t console_device_proto = {
 
 mx_status_t console_init(mx_driver_t* driver) {
     mx_device_t* dev;
-    printf("console_init()\n");
     if (device_create(&dev, driver, "console", &console_device_proto) == NO_ERROR) {
         if (device_add(dev, NULL) < 0) {
+            printf("console: device_add() failed\n");
             free(dev);
         } else {
             thrd_t t;

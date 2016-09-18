@@ -30,6 +30,7 @@ struct mnode {
 };
 
 mx_status_t mem_get_node(vnode_t** out, mx_device_t* dev);
+mx_status_t mem_can_unlink(dnode_t* dn);
 
 static void mem_release(vnode_t* vn) {
     printf("memfs: vn %p destroyed\n", vn);
@@ -121,6 +122,62 @@ static ssize_t mem_write(vnode_t* vn, const void* _data, size_t len, size_t off)
     return count;
 }
 
+mx_status_t memfs_rename(vnode_t* olddir, vnode_t* newdir,
+                         const char* oldname, size_t oldlen,
+                         const char* newname, size_t newlen) {
+    if ((olddir->dnode == NULL) || (newdir->dnode == NULL))
+        return ERR_BAD_STATE;
+    if ((oldlen == 1) && (oldname[0] == '.'))
+        return ERR_BAD_STATE;
+    if ((oldlen == 2) && (oldname[0] == '.') && (oldname[1] == '.'))
+        return ERR_BAD_STATE;
+    if ((newlen == 1) && (newname[0] == '.'))
+        return ERR_BAD_STATE;
+    if ((newlen == 2) && (newname[0] == '.') && (newname[1] == '.'))
+        return ERR_BAD_STATE;
+
+    // TODO(smklein) Support cross-directory rename
+    if (olddir->dnode != newdir->dnode)
+        return ERR_NOT_SUPPORTED;
+
+    dnode_t* olddn, *newdn;
+    mx_status_t r;
+    // The source must exist
+    if ((r = dn_lookup(olddir->dnode, &olddn, oldname, oldlen)) < 0) {
+        return r;
+    }
+    // The destination may or may not exist
+    r = dn_lookup(newdir->dnode, &newdn, newname, newlen);
+    if (r == NO_ERROR) {
+        // The target exists. Validate and unlink it.
+        if (olddn->vnode == newdn->vnode) {
+            // Cannot rename node to itself
+            return ERR_INVALID_ARGS;
+        }
+        bool srcIsFile = (olddn->vnode->dnode == NULL);
+        bool dstIsFile = (newdn->vnode->dnode == NULL);
+        if (srcIsFile != dstIsFile) {
+            // Cannot rename files to directories (and vice versa)
+            return ERR_INVALID_ARGS;
+        } else if ((r = mem_can_unlink(newdn)) < 0) {
+            return r;
+        }
+        dn_delete(newdn);
+    } else if (r != ERR_NOT_FOUND) {
+        return r;
+    }
+
+    // Relocate olddn to newdir
+    dn_move_child(newdir->dnode, olddn, newname, newlen);
+    return NO_ERROR;
+}
+
+mx_status_t memfs_rename_none(vnode_t* olddir, vnode_t* newdir,
+                              const char* oldname, size_t oldlen,
+                              const char* newname, size_t newlen) {
+    return ERR_NOT_SUPPORTED;
+}
+
 ssize_t memfs_read_none(vnode_t* vn, void* data, size_t len, size_t off) {
     return ERR_NOT_SUPPORTED;
 }
@@ -182,6 +239,18 @@ ssize_t memfs_ioctl(vnode_t* vn, uint32_t op,
     return ERR_NOT_SUPPORTED;
 }
 
+mx_status_t mem_can_unlink(dnode_t* dn) {
+    bool isDirectory = (dn->vnode->dnode != NULL);
+    if (isDirectory && (dn->vnode->refcount > 1)) {
+        // Cannot unlink an open directory
+        return ERR_BAD_STATE;
+    } else if (!list_is_empty(&dn->children)) {
+        // Cannot unlink non-empty directory
+        return ERR_BAD_STATE;
+    }
+    return NO_ERROR;
+}
+
 mx_status_t memfs_unlink(vnode_t* vn, const char* name, size_t len) {
     xprintf("memfs_unlink(%p,'%.*s')\n", vn, (int)len, name);
     if (vn->dnode == NULL) {
@@ -192,12 +261,11 @@ mx_status_t memfs_unlink(vnode_t* vn, const char* name, size_t len) {
     if ((r = dn_lookup(vn->dnode, &dn, name, len)) < 0) {
         return r;
     }
-    if (list_is_empty(&dn->children)) {
-        dn_delete(dn);
-        return NO_ERROR;
-    } else {
-        return ERR_NOT_FILE;
+    if ((r = mem_can_unlink(dn)) < 0) {
+        return r;
     }
+    dn_delete(dn);
+    return NO_ERROR;
 }
 
 static vnode_ops_t vn_mem_ops = {
@@ -211,6 +279,7 @@ static vnode_ops_t vn_mem_ops = {
     .readdir = memfs_readdir,
     .create = mem_create,
     .unlink = memfs_unlink,
+    .rename = memfs_rename,
 };
 
 static vnode_ops_t vn_mem_ops_dir = {
@@ -224,6 +293,7 @@ static vnode_ops_t vn_mem_ops_dir = {
     .readdir = memfs_readdir,
     .create = mem_create,
     .unlink = memfs_unlink,
+    .rename = memfs_rename,
 };
 
 static dnode_t mem_root_dn = {
@@ -322,7 +392,11 @@ vnode_t* vfs_get_root(void) {
     return &vfs_root.vn;
 }
 
-mx_status_t vfs_install_remote(mx_handle_t h) {
+mx_status_t vfs_install_remote(vnode_t* vn, mx_handle_t h) {
+    if (vn != &vn_data->vn) {
+        //TODO: general solution
+        return ERR_ACCESS_DENIED;
+    }
     mtx_lock(&vfs_lock);
     if (vn_data->vn.remote > 0) {
         mx_handle_close(vn_data->vn.remote);

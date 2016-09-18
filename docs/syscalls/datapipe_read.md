@@ -62,7 +62,7 @@ returned.
 
 **ERR_NOT_SUPPORTED**  *flags* has an unknown flag set.
 
-**ERR_BUSY**  *consumer_handle* is currently in a two-phase read.
+**ERR_ALREADY_BOUND**  *consumer_handle* is currently in a two-phase read.
 
 **ERR_INVALID_ARGS**  *flags* has an invalid combination of flags set,
 *requested* is not a multiple of the data pipe's element size (and query mode is
@@ -79,6 +79,11 @@ handle is closed.
 **ERR_OUT_OF_RANGE**  (In read/discard/peek mode) *requested* is nonzero and
 **MX_DATAPIPE_READ_FLAG_ALL_OR_NONE** is set, but the data pipe does not have
 the requested amount of data available (and the producer is still open).
+
+## BUGS
+
+The **ERR_OUT_OF_RANGE** will be changed to **ERR_SHOULD_WAIT** once read
+thresholds are implemented (and a corresponding Mojo change is made).
 
 ## SEE ALSO
 

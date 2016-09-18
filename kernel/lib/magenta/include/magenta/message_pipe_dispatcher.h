@@ -29,20 +29,23 @@ public:
     ~MessagePipeDispatcher() final;
     mx_obj_type_t get_type() const final { return MX_OBJ_TYPE_MESSAGE_PIPE; }
     StateTracker* get_state_tracker() final;
-    mx_koid_t get_inner_koid() const final { return pipe_->get_koid(); }
+    mx_koid_t get_inner_koid() const final { return inner_koid_; }
+    status_t set_port_client(mxtl::unique_ptr<IOPortClient> client) final;
 
     bool is_reply_pipe() const { return (flags_ & MX_FLAG_REPLY_PIPE) ? true : false; }
 
+    void set_inner_koid(mx_koid_t koid) { inner_koid_ = koid; }
     status_t BeginRead(uint32_t* message_size, uint32_t* handle_count);
     status_t AcceptRead(mxtl::Array<uint8_t>* data, mxtl::Array<Handle*>* handles);
     status_t Write(mxtl::Array<uint8_t> data, mxtl::Array<Handle*> handles);
-    status_t SetIOPort(mxtl::RefPtr<IOPortDispatcher> io_port, uint64_t key, mx_signals_t signals);
 
 private:
     MessagePipeDispatcher(uint32_t flags, size_t side, mxtl::RefPtr<MessagePipe> pipe);
 
     const size_t side_;
     const uint32_t flags_;
+    mx_koid_t inner_koid_;
+
     Mutex lock_;
     mxtl::RefPtr<MessagePipe> pipe_;
     mxtl::unique_ptr<MessagePacket> pending_;
